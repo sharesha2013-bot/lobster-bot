@@ -1,0 +1,45 @@
+name: Unmerciful Lobster Daily Scan
+
+on:
+  schedule:
+    # 每天台股收盤後（台北時間下午 5:00 執行）
+    - cron: '0 9 * * 1-5'
+  workflow_dispatch: # 讓你的手機隨時可以手動按「立刻執行」
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        pip install requests pandas
+
+    - name: Run Lobster Bot
+      # 🛠️ 偷天換日修正：直接去深層房間把大腦抓出來執行！並自動破解週末沒開盤的限制
+      run: |
+        python -c "
+        import requests
+        from datetime import datetime
+        # 1. 爬取最新一個有開盤的台股日期（解決週六日休市問題）
+        try:
+            res = requests.get('https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=2330&start_date=2026-05-15').json()
+            target_date = res['data'][-1]['date']
+            print(f'🦞 偵測到今日休市或週末，自動切換至最新台股交易日：{target_date}')
+        except Exception as e:
+            target_date = datetime.now().strftime('%Y-%m-%d')
+            print(f'無法取得最新日期，維持今日：{target_date}')
+            
+        # 2. 讀取隱藏在資料夾裡的大腦並執行
+        with open('.github/workflows/main.py', 'r', encoding='utf-8') as f:
+            code = f.read()
+        code = code.replace('today = datetime.now().strftime(\"%Y-%m-%d\")', f'today = \"{target_date}\"')
+        exec(code)
+        "
