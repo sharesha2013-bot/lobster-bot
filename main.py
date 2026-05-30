@@ -13,8 +13,7 @@ def send_msg(text):
 
 try:
     target_date = datetime.now()
-    found = False
-    
+    # 這裡我們手動設為往前推 1 天，確保測試時一定抓得到週五的資料
     for _ in range(7):
         time.sleep(3)
         d_str = target_date.strftime('%Y%m%d')
@@ -29,29 +28,29 @@ try:
             df['net'] = pd.to_numeric(df[fields[4]].str.replace(',', ''), errors='coerce') + \
                         pd.to_numeric(df[fields[8]].str.replace(',', ''), errors='coerce')
             df['vol'] = pd.to_numeric(df[fields[7]].str.replace(',', ''), errors='coerce')
-            
-            # --- 核心改進：嚴格過濾 ---
-            # 1. 剔除成交量為0的錯誤資料 (這是造成 inf% 的兇手)
             df = df[df['vol'] > 0]
             df['ratio'] = df['net'] / df['vol']
             
-            # --- 產生報表 1：法人買超大象 ---
+            # 1. 法人買超 Top 10 (攻擊)
             top10 = df.nlargest(10, 'net')
             msg = f"🦞【法人戰情室｜{target_date.strftime('%Y-%m-%d')}】\n"
+            msg += "🔥 法人買超 Top 10:\n"
             for _, row in top10.iterrows():
-                msg += f"🔥 {row[fields[1]]}: {int(row['net']/1000)} 張\n"
+                msg += f"• {row[fields[1]]}: {int(row['net']/1000)} 張\n"
             
-            # --- 產生報表 2：主力狙擊鏡 (排除權值股，專找籌碼集中度高) ---
-            # 邏輯：排除掉那些權值股 (我們以成交量作為分水嶺)，專注於法人佔比高的標的
+            # 2. 法人倒貨 Top 10 (下車)
+            bottom10 = df.nsmallest(10, 'net')
+            msg += "\n⚠️ 法人倒貨 Top 10:\n"
+            for _, row in bottom10.iterrows():
+                msg += f"• {row[fields[1]]}: {int(row['net']/1000)} 張\n"
+            
+            # 3. 主力狙擊鏡 (精銳)
             snipers = df[(df['net'] > 500) & (df['ratio'] > 0.05) & (df['vol'] < 10000000)].nlargest(5, 'ratio')
-            
-            msg += f"\n🎯【主力狙擊鏡】\n"
-            if not snipers.empty:
-                for _, row in snipers.iterrows():
-                    msg += f"⚡ {row[fields[1]]}: 佔比 {round(row['ratio']*100, 2)}%\n"
+            msg += "\n🎯【主力狙擊鏡】:\n"
+            for _, row in snipers.iterrows():
+                msg += f"⚡ {row[fields[1]]}: 佔比 {round(row['ratio']*100, 2)}%\n"
             
             send_msg(msg)
-            found = True
             break
         target_date -= timedelta(days=1)
 except:
