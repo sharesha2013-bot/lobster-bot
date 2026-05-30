@@ -1,7 +1,6 @@
 import os
 import requests
 from datetime import datetime, timedelta
-import yfinance as yf
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
@@ -10,42 +9,45 @@ def send_msg(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
-def get_macro_score():
-    score = 0
-    try:
-        # 1. 恐慌指數 VIX
-        vix = yf.Ticker("^VIX").history(period="2d")
-        if len(vix) >= 2:
-            vix_val = vix['Close'].iloc[-1]
-            vix_pct = ((vix['Close'].iloc[-1] - vix['Close'].iloc[-2]) / vix['Close'].iloc[-2]) * 100
-            if vix_val > 20 or vix_pct > 5:
-                score += 25
-        
-        # 2. 美元指數
-        usd = yf.Ticker("DX-Y.NYB").history(period="2d")
-        if len(usd) >= 2:
-            usd_pct = ((usd['Close'].iloc[-1] - usd['Close'].iloc[-2]) / usd['Close'].iloc[-2]) * 100
-            if usd_pct > 0.3:
-                score += 25
-        
-        # 3. 國際黃金期貨
-        gold = yf.Ticker("GC=F").history(period="2d")
-        if len(gold) >= 2:
-            gold_pct = ((gold['Close'].iloc[-1] - gold['Close'].iloc[-2]) / gold['Close'].iloc[-2]) * 100
-            if gold_pct > 1.0:
-                score += 25
-        
-        # 4. 紐約原油期貨
-        oil = yf.Ticker("CL=F").history(period="2d")
-        if len(oil) >= 2:
-            oil_pct = ((oil['Close'].iloc[-1] - oil['Close'].iloc[-2]) / oil['Close'].iloc[-2]) * 100
-            if oil_pct > 2.0:
-                score += 25
-    except:
-        pass  # 若總經資料獲取異常，不影響主程式運行
-    return score
-
 try:
+    # 嘗試載入總經套件
+    import yfinance as yf
+    
+    def get_macro_score():
+        score = 0
+        try:
+            # 1. 恐慌指數 VIX
+            vix = yf.Ticker("^VIX").history(period="2d")
+            if len(vix) >= 2:
+                vix_val = vix['Close'].iloc[-1]
+                vix_pct = ((vix['Close'].iloc[-1] - vix['Close'].iloc[-2]) / vix['Close'].iloc[-2]) * 100
+                if vix_val > 20 or vix_pct > 5:
+                    score += 25
+            
+            # 2. 美元指數
+            usd = yf.Ticker("DX-Y.NYB").history(period="2d")
+            if len(usd) >= 2:
+                usd_pct = ((usd['Close'].iloc[-1] - usd['Close'].iloc[-2]) / usd['Close'].iloc[-2]) * 100
+                if usd_pct > 0.3:
+                    score += 25
+            
+            # 3. 國際黃金期貨
+            gold = yf.Ticker("GC=F").history(period="2d")
+            if len(gold) >= 2:
+                gold_pct = ((gold['Close'].iloc[-1] - gold['Close'].iloc[-2]) / gold['Close'].iloc[-2]) * 100
+                if gold_pct > 1.0:
+                    score += 25
+            
+            # 4. 紐約原油期貨
+            oil = yf.Ticker("CL=F").history(period="2d")
+            if len(oil) >= 2:
+                oil_pct = ((oil['Close'].iloc[-1] - oil['Close'].iloc[-2]) / oil['Close'].iloc[-2]) * 100
+                if oil_pct > 2.0:
+                    score += 25
+        except:
+            pass 
+        return score
+
     # 執行全球風險判定
     score = get_macro_score()
     if score >= 75:
@@ -55,7 +57,7 @@ try:
     else:
         macro_msg = f"🟢【全球風險評估：{score} 分】全球市場安全，焦點看個股籌碼。\n"
 
-    # 證交所資料抓取 (自動向前尋找有效交易日，不卡週末)
+    # 證交所資料抓取 (自動向前尋找有效交易日)
     target_date = datetime.now()
     data_found = False
     
@@ -72,7 +74,6 @@ try:
                     try:
                         stock_id = row[0].strip()
                         name = row[1].strip()
-                        # 4是外資買賣超，10是投信買賣超
                         f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
                         t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
                         net = f_net + t_net
@@ -85,10 +86,8 @@ try:
                         })
                     except: continue
             
-            # 按總淨買賣超排序
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
-            # 建立戰報內文
             msg = f"🦞【戰情室 終極完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
             
@@ -103,8 +102,8 @@ try:
             msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
             count = 0
             for s in stocks:
-                if not s['id'].startswith('00'): # 排除 ETF，專注個股
-                    if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: # 土洋合買 > 1000張
+                if not s['id'].startswith('00'): 
+                    if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
                         msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外資{int(s['f_net']/1000)}/投信{int(s['t_net']/1000)})\n"
                         count += 1
                 if count >= 5: break
@@ -121,5 +120,7 @@ try:
     if not data_found:
         send_msg("❌ 查詢天數內皆無證交所資料。")
 
+except ImportError:
+    send_msg("⚠️ 系統警報：找不到 yfinance 套件！\n大俠，請去 GitHub 檢查 `requirements.txt` 檔案，裡面必須包含 `yfinance` 這行字。")
 except Exception as e:
     send_msg(f"⚠️ 終極完全體運行錯誤: {str(e)}")
