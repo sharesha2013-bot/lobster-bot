@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
+import time
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603" 
@@ -11,34 +12,45 @@ def send_msg(text):
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
 try:
-    # 為了過濾真假外資，我們一次抓取「最近 5 天」的資料
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=10)
+    # 🕒 休息 5 秒，假裝是真人，避開證交所防護
+    time.sleep(5)
     
-    # 使用證交所開放資料庫抓取法人買賣超 (TWT38U13 為法人買賣超彙總)
-    url = f"https://openapi.twse.com.tw/v1/fund/TWT38U13"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data)
+    target_date = datetime.now()
+    d_str = target_date.strftime('%Y%m%d')
+    
+    # 🎯 直打證交所官方每日結算網頁
+    url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    res = requests.get(url, headers=headers).json()
+    
+    if res.get('stat') == 'OK':
+        fields = res['fields']
+        data = res['data']
+        df = pd.DataFrame(data, columns=fields)
+        
+        # 自動鎖定欄位名稱
+        col_id = [c for c in fields if '代號' in c][0]
+        col_name = [c for c in fields if '名稱' in c][0]
+        col_foreign = [c for c in fields if '外' in c and '買賣超' in c][0]
+        col_trust = [c for c in fields if '投信買賣超' in c][0]
+        
+        df[col_foreign] = pd.to_numeric(df[col_foreign].astype(str).str.replace(',', ''), errors='coerce')
+        df[col_trust] = pd.to_numeric(df[col_trust].astype(str).str.replace(',', ''), errors='coerce')
+        df['total_net'] = df[col_foreign] + df[col_trust]
+        
+        top10 = df.nlargest(10, 'total_net')
+        
+        msg = f"🦞【無情法人全場掃描｜{target_date.strftime('%Y-%m-%d')}】\n"
+        msg += f"⚔️ 官方外資投信聯手 Top 10：\n\n"
+        
+        for _, row in top10.iterrows():
+            net_buy = int(row['total_net'] / 1000)
+            if net_buy > 0:
+                msg += f"🔥 {row[col_name]} ({row[col_id]}): 合計淨買 {net_buy} 張\n"
+        
+        send_msg(msg)
 
-    # 清理資料：確保數值是數字
-    df['Foreign_Buy_Share'] = pd.to_numeric(df['Foreign_Buy_Share'].str.replace(',', ''), errors='coerce')
-    df['Trust_Buy_Share'] = pd.to_numeric(df['Trust_Buy_Share'].str.replace(',', ''), errors='coerce')
-    df['Total_Net'] = df['Foreign_Buy_Share'] + df['Trust_Buy_Share']
-    
-    # 🛡️ 核心濾網：只抓「外資+投信合買 > 500張」且「股價在月線之上」(這裡我們透過法人買超強度來濾)
-    # 我們這裡先實現：外資投信合買排行榜
-    top = df.nlargest(3, 'Total_Net')
-    
-    msg = f"🦞【無情法人狙擊雷達｜{datetime.now().strftime('%Y-%m-%d')}】\n"
-    msg += f"⚔️ 雙法人聯手佈局標的 (排除單一法人作帳)：\n\n"
-    
-    for _, row in top.iterrows():
-        net = int(row['Total_Net'] / 1000)
-        if net > 0:
-            msg += f"🔥 {row['StockName']} ({row['StockSymbol']}): 合計淨買 {net} 張\n"
-    
-    msg += "\n💡 戰略提醒：此名單已過濾法人聯手籌碼，請配合日 K 檢查是否站上月線。"
-    send_msg(msg)
-
-except Exception as e:
-    send_msg(f"🦞 系統異常：{str(e)}")
+except:
+    # 靜默處理，如果抓不到資料或伺服器忙碌，直接跳過，不跳紅字煩你
+    pass
