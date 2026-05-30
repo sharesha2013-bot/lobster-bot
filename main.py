@@ -9,14 +9,14 @@ def send_msg(text):
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
 try:
-    d_str = "20260529"
-    url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
+    # 直接固定抓 2026/05/29 的完整數據進行測試
+    url = "https://www.twse.com.tw/fund/T86?response=json&date=20260529&selectType=ALL"
     res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).json()
     
     if res.get('stat') == 'OK':
-        data = res['data']
         stocks = []
-        for row in data:
+        for row in res['data']:
+            # 確保行數正確，避開標頭與尾巴的合計行
             if len(row) > 8:
                 try:
                     name = row[1]
@@ -27,35 +27,32 @@ try:
                     stocks.append({'name': name, 'net': net, 'vol': vol})
                 except: continue
         
-        # 買賣超排行
+        # 按買超排序
         stocks.sort(key=lambda x: x['net'], reverse=True)
         
-        # 1. 買超 Top 10
-        msg = f"🦞【戰情報告｜{d_str}】\n🔥 買超 Top 10:\n"
+        # 產出訊息 (精簡且穩定)
+        msg = f"🦞【完全體戰情報告｜20260529】\n\n🔥 買超 Top 10:\n"
         for s in stocks[:10]:
             msg += f"• {s['name']}: {int(s['net']/1000)} 張\n"
             
-        # 2. 賣超 Top 10
         msg += "\n⚠️ 倒貨 Top 10:\n"
         for s in stocks[-10:][::-1]:
             msg += f"• {s['name']}: {int(s['net']/1000)} 張\n"
             
-        # 3. 主力狙擊鏡 (精準篩選)
         msg += "\n🎯【主力狙擊鏡】:\n"
-        count = 0
+        # 狙擊邏輯：只要法人有進場，且佔比大於 2%，就列出，不設上限
+        found = False
         for s in stocks:
-            if s['vol'] > 1000000 and s['net'] > 100000:
+            if s['vol'] > 0 and s['net'] > 500000:
                 ratio = s['net'] / s['vol']
-                if ratio > 0.03:
+                if ratio > 0.02:
                     msg += f"⚡ {s['name']}: 佔比 {round(ratio*100, 1)}%\n"
-                    count += 1
-            if count >= 5: break
-            
-        if count == 0:
-            msg += "今日無法人悄悄吃貨之標的。"
-            
+                    found = True
+        
+        if not found: msg += "無特別主力鎖碼標的。"
         send_msg(msg)
     else:
-        send_msg("❌ 證交所 API 回傳異常")
+        send_msg("❌ 證交所 API 回應異常，請稍後再試。")
+
 except Exception as e:
     send_msg(f"⚠️ 程式修復錯誤: {str(e)}")
