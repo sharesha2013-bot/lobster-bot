@@ -3,8 +3,8 @@ name: Unmerciful Lobster Daily Scan
 on:
   workflow_dispatch:
   schedule:
-    # 設定每天台灣時間下午 2:30 自動執行
-    - cron: '30 6 * * *'
+    # 🎯 準時發射：台灣時間每天下午 5:30 自動執行
+    - cron: '30 9 * * *'
 
 jobs:
   run-bot:
@@ -22,7 +22,7 @@ jobs:
       run: pip install requests pandas
 
     - name: Run main.py
-      # 👇 這裡就是遺漏的關鍵授權書！讓程式能拿到金庫鑰匙
+      # 🔑 金庫授權：這一步最重要，否則程式拿不到 Token
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       run: python main.py
