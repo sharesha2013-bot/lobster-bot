@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime, timedelta
+import yfinance as yf
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
@@ -10,9 +11,6 @@ def send_msg(text):
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
 try:
-    # 嘗試載入總經套件
-    import yfinance as yf
-    
     def get_macro_score():
         score = 0
         try:
@@ -21,34 +19,45 @@ try:
             if len(vix) >= 2:
                 vix_val = vix['Close'].iloc[-1]
                 vix_pct = ((vix['Close'].iloc[-1] - vix['Close'].iloc[-2]) / vix['Close'].iloc[-2]) * 100
-                if vix_val > 20 or vix_pct > 5:
-                    score += 25
+                if vix_val > 20 or vix_pct > 5: score += 25
             
             # 2. 美元指數
             usd = yf.Ticker("DX-Y.NYB").history(period="2d")
             if len(usd) >= 2:
                 usd_pct = ((usd['Close'].iloc[-1] - usd['Close'].iloc[-2]) / usd['Close'].iloc[-2]) * 100
-                if usd_pct > 0.3:
-                    score += 25
+                if usd_pct > 0.3: score += 25
             
             # 3. 國際黃金期貨
             gold = yf.Ticker("GC=F").history(period="2d")
             if len(gold) >= 2:
                 gold_pct = ((gold['Close'].iloc[-1] - gold['Close'].iloc[-2]) / gold['Close'].iloc[-2]) * 100
-                if gold_pct > 1.0:
-                    score += 25
+                if gold_pct > 1.0: score += 25
             
             # 4. 紐約原油期貨
             oil = yf.Ticker("CL=F").history(period="2d")
             if len(oil) >= 2:
                 oil_pct = ((oil['Close'].iloc[-1] - oil['Close'].iloc[-2]) / oil['Close'].iloc[-2]) * 100
-                if oil_pct > 2.0:
-                    score += 25
+                if oil_pct > 2.0: score += 25
         except:
             pass 
         return score
 
-    # 執行全球風險判定
+    def get_us_tech():
+        try:
+            # 抓取費城半導體 (^SOX) 與 台積電 ADR (TSM)
+            sox = yf.Ticker("^SOX").history(period="2d")
+            tsm = yf.Ticker("TSM").history(period="2d")
+            
+            if len(sox) >= 2 and len(tsm) >= 2:
+                sox_pct = ((sox['Close'].iloc[-1] - sox['Close'].iloc[-2]) / sox['Close'].iloc[-2]) * 100
+                tsm_pct = ((tsm['Close'].iloc[-1] - tsm['Close'].iloc[-2]) / tsm['Close'].iloc[-2]) * 100
+                # 用 :+.2f 強制顯示正負號跟小數點後兩位
+                return f"🇺🇸【美股風向球】費城半導體: {sox_pct:+.2f}% ｜ 台積電 ADR: {tsm_pct:+.2f}%\n"
+        except:
+            return "🇺🇸【美股風向球】夜盤數據讀取中斷\n"
+        return ""
+
+    # 1. 執行全球風險判定
     score = get_macro_score()
     if score >= 75:
         macro_msg = f"🚨【全球防禦警報：{score} 分】市場風暴來襲，請啟動絕對防禦！\n"
@@ -57,7 +66,10 @@ try:
     else:
         macro_msg = f"🟢【全球風險評估：{score} 分】全球市場安全，焦點看個股籌碼。\n"
 
-    # 證交所資料抓取 (自動向前尋找有效交易日)
+    # 2. 執行美股夜盤風向
+    us_tech_msg = get_us_tech()
+
+    # 3. 證交所資料抓取
     target_date = datetime.now()
     data_found = False
     
@@ -78,18 +90,16 @@ try:
                         t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
                         net = f_net + t_net
                         stocks.append({
-                            'id': stock_id, 
-                            'name': name, 
-                            'f_net': f_net, 
-                            't_net': t_net, 
-                            'net': net
+                            'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net
                         })
                     except: continue
             
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
+            # 組合終極戰報
             msg = f"🦞【戰情室 終極完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
+            msg += us_tech_msg  # 把美股風向球加在這裡
             
             msg += "\n🔥 買超 Top 10:\n"
             for s in stocks[:10]:
@@ -121,6 +131,6 @@ try:
         send_msg("❌ 查詢天數內皆無證交所資料。")
 
 except ImportError:
-    send_msg("⚠️ 系統警報：找不到 yfinance 套件！\n大俠，請去 GitHub 檢查 `requirements.txt` 檔案，裡面必須包含 `yfinance` 這行字。")
+    send_msg("⚠️ 系統警報：找不到 yfinance 套件！請檢查 requirements.txt")
 except Exception as e:
     send_msg(f"⚠️ 終極完全體運行錯誤: {str(e)}")
