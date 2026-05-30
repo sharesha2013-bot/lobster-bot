@@ -9,14 +9,14 @@ def send_msg(text):
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
 try:
-    # 直接固定抓 2026/05/29 的完整數據進行測試
+    # 確保抓取的是 2026/05/29 的原始數據
     url = "https://www.twse.com.tw/fund/T86?response=json&date=20260529&selectType=ALL"
     res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).json()
     
     if res.get('stat') == 'OK':
+        data = res['data']
         stocks = []
-        for row in res['data']:
-            # 確保行數正確，避開標頭與尾巴的合計行
+        for row in data:
             if len(row) > 8:
                 try:
                     name = row[1]
@@ -24,14 +24,17 @@ try:
                     t_buy = int(row[8].replace(',', '')) if row[8] != '--' else 0
                     vol = int(row[7].replace(',', '')) if row[7] != '--' else 0
                     net = f_buy + t_buy
+                    # 數值精準對接：只要有成交量與買超就錄入
                     stocks.append({'name': name, 'net': net, 'vol': vol})
                 except: continue
         
-        # 按買超排序
+        # 排序
         stocks.sort(key=lambda x: x['net'], reverse=True)
         
-        # 產出訊息 (精簡且穩定)
-        msg = f"🦞【完全體戰情報告｜20260529】\n\n🔥 買超 Top 10:\n"
+        # 產出報表
+        msg = "🦞【戰情室驗證版｜20260529】\n"
+        
+        msg += "\n🔥 買超 Top 10:\n"
         for s in stocks[:10]:
             msg += f"• {s['name']}: {int(s['net']/1000)} 張\n"
             
@@ -40,19 +43,18 @@ try:
             msg += f"• {s['name']}: {int(s['net']/1000)} 張\n"
             
         msg += "\n🎯【主力狙擊鏡】:\n"
-        # 狙擊邏輯：只要法人有進場，且佔比大於 2%，就列出，不設上限
-        found = False
+        # 這裡直接用你驗證過的門檻：法人淨買超佔比 > 2% 即視為主力動作
+        count = 0
         for s in stocks:
-            if s['vol'] > 0 and s['net'] > 500000:
+            if s['vol'] > 0 and s['net'] > 500000: # 買超大於 500 張
                 ratio = s['net'] / s['vol']
                 if ratio > 0.02:
                     msg += f"⚡ {s['name']}: 佔比 {round(ratio*100, 1)}%\n"
-                    found = True
-        
-        if not found: msg += "無特別主力鎖碼標的。"
+                    count += 1
+            if count >= 5: break
+            
         send_msg(msg)
     else:
-        send_msg("❌ 證交所 API 回應異常，請稍後再試。")
-
+        send_msg("❌ 證交所 API 回應異常")
 except Exception as e:
-    send_msg(f"⚠️ 程式修復錯誤: {str(e)}")
+    send_msg(f"⚠️ 程式錯誤: {str(e)}")
