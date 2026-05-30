@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 
 # 🛡️ 安全防護：總鑰匙從金庫讀取
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-# 🎯 務實折衷：信箱號碼直接寫死，安全且省事
 CHAT_ID = "8543567603" 
 
 def send_msg(text):
@@ -13,12 +12,14 @@ def send_msg(text):
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
 def get_data(date_str):
-    url = f"https://api.finmindtrade.com/api/v4/data?dataset=InstitutionalInvestorsBuySell&date={date_str}"
+    # 🔥 致命錯誤修正：加上 TaiwanStock 前綴才是對的資料庫！
+    url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&date={date_str}"
     return requests.get(url).json().get('data', [])
 
 try:
     target_date = datetime.now()
     data = []
+    # 往前找7天，直到找到有資料的那一天
     for _ in range(7):
         date_str = target_date.strftime('%Y-%m-%d')
         data = get_data(date_str)
@@ -26,12 +27,13 @@ try:
         target_date -= timedelta(days=1)
 
     if not data:
-        send_msg("🦞 龍蝦雷達：近7天無法人資料，請確認是否休市。")
+        send_msg("🦞 龍蝦雷達：近7天無法人資料，請確認 API 狀態。")
     else:
         df = pd.DataFrame(data)
         col = 'stock_id' if 'stock_id' in df.columns else df.columns[0]
         
         df['net'] = df['buy'] - df['sell']
+        # 篩選淨買超前 5 名
         top = df.groupby(col)['net'].sum().nlargest(5)
         
         msg = f"🦞【無情法人佈局雷達｜{date_str}】\n"
