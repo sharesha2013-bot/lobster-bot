@@ -13,8 +13,6 @@ def send_msg(text):
 
 try:
     target_date = datetime.now()
-    
-    # 強制重試找資料
     for _ in range(7):
         time.sleep(3)
         d_str = target_date.strftime('%Y%m%d')
@@ -25,19 +23,25 @@ try:
             fields = res['fields']
             df = pd.DataFrame(res['data'], columns=fields)
             
-            # 整理數據
+            # 數值清洗
+            # 欄位順序：0代號, 1名稱, 4外資買賣超, 8投信買賣超, 7成交股數
             df['net'] = pd.to_numeric(df[fields[4]].str.replace(',', ''), errors='coerce') + \
                         pd.to_numeric(df[fields[8]].str.replace(',', ''), errors='coerce')
+            df['vol'] = pd.to_numeric(df[fields[7]].str.replace(',', ''), errors='coerce')
             
-            # 🎯 暴力過濾器：只留「合計買超 > 5000 張」的精銳
-            top_filtered = df[df['net'] > 5000].nlargest(10, 'net')
+            # 🎯 狙擊手核心邏輯：
+            # 1. 買超張數 > 1000張 (過濾掉零星買盤)
+            # 2. 法人買超佔比 > 10% (這代表這檔股票今天是被法人「鎖定」的)
+            df['ratio'] = df['net'] / df['vol']
+            top_filtered = df[(df['net'] > 1000) & (df['ratio'] > 0.10)].nlargest(10, 'net')
             
-            msg = f"🦞【籌碼狙擊鏡｜{target_date.strftime('%Y-%m-%d')}】\n"
-            msg += f"⚔️ 已過濾掉 5000 張以下的雜訊，只留精銳：\n\n"
+            msg = f"🦞【狙擊手戰情室｜{target_date.strftime('%Y-%m-%d')}】\n"
+            msg += f"⚔️ 鎖定：法人吃貨佔成交量 10% 以上之精銳標的：\n\n"
             
             for _, row in top_filtered.iterrows():
-                net_buy = int(row['net'] / 1000)
-                msg += f"🔥 {row[fields[1]]}({row[fields[0]]}): 合計買 {net_buy} 張\n"
+                net = int(row['net'] / 1000)
+                pct = round(row['ratio'] * 100, 2)
+                msg += f"🔥 {row[fields[1]]}({row[fields[0]]}): 買 {net} 張 (法人佔比 {pct}%)\n"
             
             send_msg(msg)
             break
