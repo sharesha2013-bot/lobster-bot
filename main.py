@@ -1,30 +1,77 @@
 import requests
 import pandas as pd
+from datetime import datetime, timedelta
 
-bot_token = "8885153743:AAEjhEazpexj2j-Az-UzaOQWBy4mNl45KMY"
-chat_id = "8543567603"
+# ===== Telegram =====
+BOT_TOKEN = "改成你的BOT_TOKEN"
+CHAT_ID = "改成你的CHAT_ID"
+
+# ===== FinMind =====
+FINMIND_TOKEN = "改成你的FINMIND_TOKEN"
 
 def send_msg(text):
-    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={"chat_id": chat_id, "text": text})
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        json={
+            "chat_id": CHAT_ID,
+            "text": text
+        }
+    )
+
+def get_trade_date():
+    today = datetime.now()
+
+    # 星期六抓星期五
+    if today.weekday() == 5:
+        today = today - timedelta(days=1)
+
+    # 星期日抓星期五
+    elif today.weekday() == 6:
+        today = today - timedelta(days=2)
+
+    return today.strftime("%Y-%m-%d")
 
 try:
-    # 改用「每日股價」資料庫，這個保證週末也能撈到週五的結算資料
-    url = "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&start_date=2026-05-29"
-    response = requests.get(url).json()
-    data = response.get('data', [])
-    
-    if not data:
-        send_msg("🦞 龍蝦回報：今日 API 資料庫有點狀況，週一開盤後將恢復正常。")
-    else:
-        df = pd.DataFrame(data)
-        # 計算當日漲跌幅
-        df['pct'] = (df['close'] - df['close_price_previous']) / df['close_price_previous'] * 100
-        top = df.nlargest(5, 'pct')
-        
-        msg = f"🦞【市場強勢獵物｜週五收盤結算】\n\n"
-        for _, row in top.iterrows():
-            msg += f"🎯 {row['stock_id']}: {row['close']}元 (漲幅 {row['pct']:.2f}%)\n"
-        send_msg(msg)
+
+    trade_date = get_trade_date()
+
+    url = "https://api.finmindtrade.com/api/v4/data"
+
+    params = {
+        "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+        "start_date": trade_date,
+        "end_date": trade_date,
+        "token": FINMIND_TOKEN
+    }
+
+    response = requests.get(url, params=params)
+    data = response.json().get("data", [])
+
+    if len(data) == 0:
+        send_msg(f"🦞 {trade_date} 沒抓到法人資料")
+        raise Exception("No Data")
+
+    df = pd.DataFrame(data)
+
+    msg = f"🦞【法人布局雷達】\n"
+    msg += f"日期：{trade_date}\n\n"
+
+    # 先顯示前20筆測試資料
+    for _, row in df.head(20).iterrows():
+
+        stock = row.get("stock_id", "未知")
+        investor = row.get("name", "未知法人")
+
+        buy_sell = (
+            row.get("buy_sell", 0)
+            if row.get("buy_sell") is not None
+            else 0
+        )
+
+        msg += f"{stock} | {investor} | {buy_sell}\n"
+
+    send_msg(msg)
 
 except Exception as e:
-    send_msg(f"🦞 龍蝦除錯：{str(e)}")
+
+    send_msg(f"🦞 錯誤：{str(e)}")
