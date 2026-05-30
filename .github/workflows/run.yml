@@ -1,27 +1,28 @@
 name: Unmerciful Lobster Daily Scan
 
 on:
+  workflow_dispatch:
   schedule:
-    # 每天台股收盤後（台北時間下午 5:00 執行）
-    # 註：GitHub 使用國際標準時 UTC，17:00 台北時間等於 09:00 UTC
-    - cron: '0 9 * * 1-5'
-  workflow_dispatch: # 讓你的手機隨時可以手動按「立刻執行」
+    # 設定每天台灣時間下午 2:30 自動執行
+    - cron: '30 6 * * *'
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v3
 
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        pip install requests pandas
+    - name: Install packages
+      run: pip install requests pandas
 
-    - name: Run Lobster Bot
+    - name: Run main.py
+      # 👇 這裡就是遺漏的關鍵授權書！讓程式能拿到金庫鑰匙
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       run: python main.py
