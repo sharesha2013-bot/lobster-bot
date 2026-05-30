@@ -22,28 +22,27 @@ try:
         if res.get('stat') == 'OK':
             fields = res['fields']
             df = pd.DataFrame(res['data'], columns=fields)
-            
-            # 數值清洗
-            # 欄位順序：0代號, 1名稱, 4外資買賣超, 8投信買賣超, 7成交股數
             df['net'] = pd.to_numeric(df[fields[4]].str.replace(',', ''), errors='coerce') + \
                         pd.to_numeric(df[fields[8]].str.replace(',', ''), errors='coerce')
             df['vol'] = pd.to_numeric(df[fields[7]].str.replace(',', ''), errors='coerce')
-            
-            # 🎯 狙擊手核心邏輯：
-            # 1. 買超張數 > 1000張 (過濾掉零星買盤)
-            # 2. 法人買超佔比 > 10% (這代表這檔股票今天是被法人「鎖定」的)
             df['ratio'] = df['net'] / df['vol']
-            top_filtered = df[(df['net'] > 1000) & (df['ratio'] > 0.10)].nlargest(10, 'net')
             
-            msg = f"🦞【狙擊手戰情室｜{target_date.strftime('%Y-%m-%d')}】\n"
-            msg += f"⚔️ 鎖定：法人吃貨佔成交量 10% 以上之精銳標的：\n\n"
+            # --- 報表 1：法人大象 ---
+            top10 = df.nlargest(10, 'net')
+            msg1 = f"🦞【法人戰情室｜{target_date.strftime('%Y-%m-%d')}】\n"
+            for _, row in top10.iterrows():
+                msg1 += f"🔥 {row[fields[1]]}: {int(row['net']/1000)} 張\n"
             
-            for _, row in top_filtered.iterrows():
-                net = int(row['net'] / 1000)
-                pct = round(row['ratio'] * 100, 2)
-                msg += f"🔥 {row[fields[1]]}({row[fields[0]]}): 買 {net} 張 (法人佔比 {pct}%)\n"
+            # --- 報表 2：主力狙擊 (買超 > 500 張 且 佔比 > 15%) ---
+            snipers = df[(df['net'] > 500) & (df['ratio'] > 0.15)].nlargest(5, 'ratio')
+            msg2 = f"\n🎯【主力狙擊鏡｜{target_date.strftime('%Y-%m-%d')}】\n"
+            if not snipers.empty:
+                for _, row in snipers.iterrows():
+                    msg2 += f"⚡ {row[fields[1]]}: 佔比 {round(row['ratio']*100, 2)}% (主力鎖碼)\n"
+            else:
+                msg2 += "無符合鎖碼條件之標的。"
             
-            send_msg(msg)
+            send_msg(msg1 + msg2)
             break
         target_date -= timedelta(days=1)
 except:
