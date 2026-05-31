@@ -56,7 +56,7 @@ try:
         return ""
 
     def get_washout_leaders():
-        # 大俠專屬：科技龍頭觀察池 (可隨時增減)
+        # 科技龍頭觀察池
         tech_leaders = {
             '2330.TW': '台積電', '2454.TW': '聯發科', '2317.TW': '鴻海',
             '2382.TW': '廣達', '3231.TW': '緯創', '2308.TW': '台達電',
@@ -66,32 +66,30 @@ try:
         washout_list = []
         try:
             for ticker, name in tech_leaders.items():
-                df = yf.Ticker(ticker).history(period="25d")
-                if len(df) < 20: continue
+                df = yf.Ticker(ticker).history(period="15d")
+                if len(df) < 10: continue
                 
-                # 計算 20日均線 (月線) 與 5日均量
-                ma20 = df['Close'].tail(20).mean()
+                # 改抓 10日均線 (強勢防線) 與 3日均量 (極短線量縮)
+                ma10 = df['Close'].tail(10).mean()
                 current_price = df['Close'].iloc[-1]
-                vol_5ma = df['Volume'].tail(5).mean()
+                vol_3ma = df['Volume'].tail(3).mean()
                 current_vol = df['Volume'].iloc[-1]
                 
-                # 🎯 洗盤過濾邏輯：
-                # 1. 量縮：今日成交量小於近 5 日均量
-                # 2. 貼近支撐：股價距離 20MA 上下不超過 3%
-                price_diff_pct = abs(current_price - ma20) / ma20
+                # 🎯 升級洗盤過濾邏輯：
+                # 1. 極致量縮：今日成交量必須小於近 3 日均量
+                # 2. 精準貼近：股價距離 10MA 上下不超過 2%
+                price_diff_pct = abs(current_price - ma10) / ma10
                 
-                if current_vol < vol_5ma and price_diff_pct <= 0.03:
-                    # 判斷是在月線之上還是之下
-                    position = "守穩月線" if current_price >= ma20 else "月線下緣"
-                    washout_list.append(f"• {name}: 價 {current_price:.1f} ({position}, 量縮)")
+                if current_vol < vol_3ma and price_diff_pct <= 0.02:
+                    position = "守穩十日線" if current_price >= ma10 else "十日線下緣"
+                    washout_list.append(f"• {name}: 價 {current_price:.1f} ({position}, 極致量縮)")
         except Exception as e:
             return f"\n⚠️ 龍頭洗盤雷達掃描異常: {e}\n"
         
         if washout_list:
-            return "\n🎯【科技龍頭洗盤狙擊區】:\n" + "\n".join(washout_list) + "\n"
+            return "\n🎯【科技龍頭洗盤狙擊區 (10MA強勢版)】:\n" + "\n".join(washout_list) + "\n"
         else:
-            return "\n🎯【科技龍頭洗盤狙擊區】:\n今日無符合量縮貼近月線之龍頭股。\n"
-
+            return "\n🎯【科技龍頭洗盤狙擊區 (10MA強勢版)】:\n今日無符合量縮貼近十日線之龍頭股。\n"
 
     # 1. 執行全球風險判定
     score = get_macro_score()
@@ -139,8 +137,7 @@ try:
             msg = f"🦞【戰情室 終極完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
             msg += us_tech_msg
-            
-            msg += washout_msg # ★ 科技龍頭洗盤雷達插入這裡 ★
+            msg += washout_msg # 科技龍頭洗盤雷達融合處
             
             msg += "\n🔥 買超 Top 10:\n"
             for s in stocks[:10]:
@@ -150,7 +147,7 @@ try:
             for s in stocks[-10:][::-1]:
                 msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張\n"
                 
-            msg += "\n🤝【主力狙擊鏡｜土洋合買】:\n"
+            msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
             count = 0
             for s in stocks:
                 if not s['id'].startswith('00'): 
