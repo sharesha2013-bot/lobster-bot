@@ -56,7 +56,7 @@ try:
         return ""
 
     def get_washout_leaders():
-        # 科技龍頭觀察池
+        # 大俠的科技龍頭觀察池
         tech_leaders = {
             '2330.TW': '台積電', '2454.TW': '聯發科', '2317.TW': '鴻海',
             '2382.TW': '廣達', '3231.TW': '緯創', '2308.TW': '台達電',
@@ -69,27 +69,29 @@ try:
                 df = yf.Ticker(ticker).history(period="15d")
                 if len(df) < 10: continue
                 
-                # 改抓 10日均線 (強勢防線) 與 3日均量 (極短線量縮)
-                ma10 = df['Close'].tail(10).mean()
+                # 計算近 10 日主力建倉成本 (VWAP - 成交量加權平均價)
+                recent_10d = df.tail(10)
+                vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / recent_10d['Volume'].sum()
+                
                 current_price = df['Close'].iloc[-1]
                 vol_3ma = df['Volume'].tail(3).mean()
                 current_vol = df['Volume'].iloc[-1]
                 
-                # 🎯 升級洗盤過濾邏輯：
+                # 🎯 起漲點過濾邏輯：
                 # 1. 極致量縮：今日成交量必須小於近 3 日均量
-                # 2. 精準貼近：股價距離 10MA 上下不超過 2%
-                price_diff_pct = abs(current_price - ma10) / ma10
+                # 2. 踩穩主力成本：股價距離 10日VWAP 成本線 上下不超過 2%
+                price_diff_pct = abs(current_price - vwap_10d) / vwap_10d
                 
                 if current_vol < vol_3ma and price_diff_pct <= 0.02:
-                    position = "守穩十日線" if current_price >= ma10 else "十日線下緣"
-                    washout_list.append(f"• {name}: 價 {current_price:.1f} ({position}, 極致量縮)")
+                    position = "守穩建倉成本" if current_price >= vwap_10d else "成本線下緣"
+                    washout_list.append(f"• {name}: 價 {current_price:.1f} (主力估計成本: {vwap_10d:.1f} | {position}, 量縮)")
         except Exception as e:
-            return f"\n⚠️ 龍頭洗盤雷達掃描異常: {e}\n"
+            return f"\n⚠️ 龍蝦起漲雷達掃描異常: {e}\n"
         
         if washout_list:
-            return "\n🎯【科技龍頭洗盤狙擊區 (10MA強勢版)】:\n" + "\n".join(washout_list) + "\n"
+            return "\n🎯【大戶建倉起漲狙擊區 (VWAP成本版)】:\n" + "\n".join(washout_list) + "\n"
         else:
-            return "\n🎯【科技龍頭洗盤狙擊區 (10MA強勢版)】:\n今日無符合量縮貼近十日線之龍頭股。\n"
+            return "\n🎯【大戶建倉起漲狙擊區 (VWAP成本版)】:\n今日無符合量縮且踩穩主力成本之龍頭股。\n"
 
     # 1. 執行全球風險判定
     score = get_macro_score()
@@ -103,7 +105,7 @@ try:
     # 2. 執行美股夜盤風向
     us_tech_msg = get_us_tech()
 
-    # 3. 執行大俠的科技龍頭洗盤雷達
+    # 3. 執行大俠的科技龍頭 VWAP 洗盤雷達
     washout_msg = get_washout_leaders()
 
     # 4. 證交所資料抓取
@@ -137,7 +139,8 @@ try:
             msg = f"🦞【戰情室 終極完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
             msg += us_tech_msg
-            msg += washout_msg # 科技龍頭洗盤雷達融合處
+            
+            msg += washout_msg # 科技龍頭主力建倉雷達融合處
             
             msg += "\n🔥 買超 Top 10:\n"
             for s in stocks[:10]:
