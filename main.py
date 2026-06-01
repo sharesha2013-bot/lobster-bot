@@ -55,9 +55,12 @@ try:
             return "🇺🇸【美股風向球】夜盤數據讀取中斷\n"
         return ""
 
-    def scan_dynamic_targets(candidate_stocks):
-        washout_list = []
-        scan_pool = candidate_stocks[:40] # 擴大掃描範圍至前 40 檔熱門籌碼
+    def scan_pro_targets(candidate_stocks):
+        washout_mode_list = []  # 🎭 洗碗秀清單
+        breakout_mode_list = [] # 🚀 主升段清單
+        
+        # 擴大掃描到當日法人買超前 50 名，抓出潛藏的獵物
+        scan_pool = candidate_stocks[:50] 
         
         for s in scan_pool:
             stock_id = s['id']
@@ -72,6 +75,7 @@ try:
                 if len(df) < 25: continue
                 
                 current_price = df['Close'].iloc[-1]
+                current_vol = df['Volume'].iloc[-1]
                 
                 # 🛡️ 終極濾網 1：大趨勢保護 (均線多頭排列)
                 ma10 = df['Close'].tail(10).mean()
@@ -79,31 +83,45 @@ try:
                 if not (current_price > ma20 and ma10 >= ma20):
                     continue # 跌破月線或空頭排列，直接剔除
                 
-                # 🛡️ 終極濾網 2：主力點火驗證 (近 15 天內必須有單日大漲 > 4.5%)
-                recent_15d = df.tail(15).copy()
-                recent_15d['Pct_Change'] = recent_15d['Close'].pct_change() * 100
-                if recent_15d['Pct_Change'].max() < 4.5:
-                    continue # 沒爆發力，剔除
-
-                # 🎯 終極濾網 3：計算主力成本與洗盤狀態
+                # 計算籌碼防禦與攻擊指標
                 recent_10d = df.tail(10)
                 vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / recent_10d['Volume'].sum()
+                avg_vol_5d = df['Volume'].tail(5).mean()
+                high_10d = recent_10d['High'].max() # 近期大鍋蓋位置
                 
-                vol_3ma = df['Volume'].tail(3).mean()
-                current_vol = df['Volume'].iloc[-1]
-                
-                price_diff_pct = abs(current_price - vwap_10d) / vwap_10d
-                
-                if current_vol < vol_3ma and price_diff_pct <= 0.02:
-                    position = "守穩建倉成本" if current_price >= vwap_10d else "成本線下緣"
-                    washout_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} (主力成本: {vwap_10d:.1f} | {position}, 量縮)")
+                price_diff_pct = (current_price - vwap_10d) / vwap_10d
+
+                # ---------------------------------------------------------
+                # 🎭 軌道 A：偵測「洗碗秀」(主力吸籌與洗盤)
+                # 條件：守住成本底線 + 量縮 (低於5日均量) + 價格緊貼成本
+                # ---------------------------------------------------------
+                if current_price >= (vwap_10d * 0.99) and current_vol < avg_vol_5d and abs(price_diff_pct) <= 0.03:
+                    status = f"守底 {vwap_10d:.1f} | 量縮洗盤中"
+                    washout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
+
+                # ---------------------------------------------------------
+                # 🚀 軌道 B：偵測「主升段」(主力點火發動)
+                # 條件：站穩成本之上 + 爆量點火 (大於5日均量1.5倍) + 挑戰近期高點鍋蓋
+                # ---------------------------------------------------------
+                elif current_price >= vwap_10d and current_vol > (avg_vol_5d * 1.5):
+                    if current_price >= (high_10d * 0.98): # 距離鍋蓋不到 2% 或已經突破
+                        status = f"爆量吃鍋蓋! (10日高 {high_10d:.1f})"
+                        breakout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
+
             except:
                 continue
                 
-        if washout_list:
-            return "\n🎯【全市場起漲狙擊區 (終極嚴謹版)】:\n" + "\n".join(washout_list) + "\n"
-        else:
-            return "\n🎯【全市場起漲狙擊區 (終極嚴謹版)】:\n今日無符合均線多頭且踩穩主力成本之強勢標的。\n"
+        # 組合戰情報告
+        report = "\n🎯【龍蝦戰情室 Pro - 雙軌獵殺名單】\n"
+        report += "="*35 + "\n"
+        report += "🟢 階段一：洗碗秀 (量縮守底，適合潛伏)\n"
+        report += "\n".join(washout_mode_list) if washout_mode_list else "今日無符合洗碗狀態標的"
+        report += "\n\n"
+        report += "🔴 階段二：主升段 (爆量點火，準備吃鍋蓋)\n"
+        report += "\n".join(breakout_mode_list) if breakout_mode_list else "今日無符合主升段爆發標的"
+        report += "\n" + "="*35 + "\n"
+        
+        return report
 
     # 1. 執行全球風險判定
     score = get_macro_score()
@@ -135,7 +153,6 @@ try:
                         stock_id = row[0].strip()
                         name = row[1].strip()
                         
-                        # 只保留一條基本防線：踢除 ETF (因為 ETF 沒有主力單日點火的特性)
                         if stock_id.startswith('00'): continue 
                         
                         f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
@@ -146,15 +163,16 @@ try:
                         })
                     except: continue
             
+            # 依照法人淨買超排序，確保我們掃描的是「主力真金白銀進場」的標的
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
-            washout_msg = scan_dynamic_targets(stocks)
+            pro_msg = scan_pro_targets(stocks)
             
-            msg = f"🦞【戰情室 終極完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
+            msg = f"🦞【戰情室 Pro 雙軌版｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
             msg += us_tech_msg
             
-            msg += washout_msg 
+            msg += pro_msg 
             
             msg += "\n🔥 買超 Top 10:\n"
             for s in stocks[:10]:
@@ -168,7 +186,7 @@ try:
             count = 0
             for s in stocks:
                 if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
-                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外資{int(s['f_net']/1000)}/投信{int(s['t_net']/1000)})\n"
+                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
                     count += 1
                 if count >= 5: break
                 
@@ -187,4 +205,4 @@ try:
 except ImportError:
     send_msg("⚠️ 系統警報：找不到 yfinance 套件！請檢查 requirements.txt")
 except Exception as e:
-    send_msg(f"⚠️ 終極完全體運行錯誤: {str(e)}")
+    send_msg(f"⚠️ Pro完全體運行錯誤: {str(e)}")
