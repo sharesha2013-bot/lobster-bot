@@ -57,7 +57,7 @@ try:
 
     def scan_dynamic_targets(candidate_stocks):
         washout_list = []
-        scan_pool = candidate_stocks[:30] # 掃描籌碼最熱的前 30 檔
+        scan_pool = candidate_stocks[:40] # 擴大掃描範圍至前 40 檔熱門籌碼
         
         for s in scan_pool:
             stock_id = s['id']
@@ -65,22 +65,27 @@ try:
             
             ticker_id = f"{stock_id}.TW"
             try:
-                df = yf.Ticker(ticker_id).history(period="15d")
-                if len(df) < 10:
-                    df = yf.Ticker(f"{stock_id}.TWO").history(period="15d")
-                if len(df) < 10: continue
+                # 抓取 30 天數據確保均線計算正確
+                df = yf.Ticker(ticker_id).history(period="30d")
+                if len(df) < 25:
+                    df = yf.Ticker(f"{stock_id}.TWO").history(period="30d")
+                if len(df) < 25: continue
                 
-                # 🚀 跑車濾網：檢查「震幅」與「價格」
                 current_price = df['Close'].iloc[-1]
-                period_high = df['High'].max()
-                period_low = df['Low'].min()
-                amplitude = (period_high - period_low) / period_low
                 
-                # 踢掉股價太低 (<30) 或根本沒在動 (震幅 < 10%) 的殭屍股與存股
-                if current_price < 30 or amplitude < 0.10:
-                    continue
+                # 🛡️ 終極濾網 1：大趨勢保護 (均線多頭排列)
+                ma10 = df['Close'].tail(10).mean()
+                ma20 = df['Close'].tail(20).mean()
+                if not (current_price > ma20 and ma10 >= ma20):
+                    continue # 跌破月線或空頭排列，直接剔除
+                
+                # 🛡️ 終極濾網 2：主力點火驗證 (近 15 天內必須有單日大漲 > 4.5%)
+                recent_15d = df.tail(15).copy()
+                recent_15d['Pct_Change'] = recent_15d['Close'].pct_change() * 100
+                if recent_15d['Pct_Change'].max() < 4.5:
+                    continue # 沒爆發力，剔除
 
-                # 🎯 計算近 10 日 VWAP 大戶建倉成本
+                # 🎯 終極濾網 3：計算主力成本與洗盤狀態
                 recent_10d = df.tail(10)
                 vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / recent_10d['Volume'].sum()
                 
@@ -91,14 +96,14 @@ try:
                 
                 if current_vol < vol_3ma and price_diff_pct <= 0.02:
                     position = "守穩建倉成本" if current_price >= vwap_10d else "成本線下緣"
-                    washout_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} (主力估計成本: {vwap_10d:.1f} | {position}, 量縮)")
+                    washout_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} (主力成本: {vwap_10d:.1f} | {position}, 量縮)")
             except:
                 continue
                 
         if washout_list:
-            return "\n🎯【全市場起漲狙擊區 (強勢跑車版)】:\n" + "\n".join(washout_list) + "\n"
+            return "\n🎯【全市場起漲狙擊區 (終極嚴謹版)】:\n" + "\n".join(washout_list) + "\n"
         else:
-            return "\n🎯【全市場起漲狙擊區 (強勢跑車版)】:\n今日強勢股中，無符合量縮且具備高波動之標的。\n"
+            return "\n🎯【全市場起漲狙擊區 (終極嚴謹版)】:\n今日無符合均線多頭且踩穩主力成本之強勢標的。\n"
 
     # 1. 執行全球風險判定
     score = get_macro_score()
@@ -130,10 +135,8 @@ try:
                         stock_id = row[0].strip()
                         name = row[1].strip()
                         
-                        # 🛡️ 第一層防禦：直接把 ETF 與傳統防禦股踢出局！
-                        if stock_id.startswith('00'): continue # 踢掉所有 ETF (如 00919, 00929)
-                        if stock_id.startswith('28') or stock_id.startswith('58'): continue # 踢掉金融股
-                        if stock_id.startswith('11') or stock_id.startswith('12') or stock_id.startswith('13') or stock_id.startswith('14'): continue # 踢掉水泥、食品、塑膠、紡織
+                        # 只保留一條基本防線：踢除 ETF (因為 ETF 沒有主力單日點火的特性)
+                        if stock_id.startswith('00'): continue 
                         
                         f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
                         t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
