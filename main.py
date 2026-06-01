@@ -55,21 +55,30 @@ try:
             return "🇺🇸【美股風向球】夜盤數據讀取中斷\n"
         return ""
 
-    def get_washout_leaders():
-        # 大俠的科技龍頭觀察池
-        tech_leaders = {
-            '2330.TW': '台積電', '2454.TW': '聯發科', '2317.TW': '鴻海',
-            '2382.TW': '廣達', '3231.TW': '緯創', '2308.TW': '台達電',
-            '3017.TW': '奇鋐', '3324.TW': '雙鴻', '3661.TW': '世芯-KY',
-            '2344.TW': '華邦電', '2408.TW': '南亞科', '8299.TWO': '群聯'
-        }
+    def scan_dynamic_targets(candidate_stocks):
+        """
+        [解封核心]：從證交所今日篩選出的強勢候選名單中，動態計算 10日 VWAP 主力成本線與量縮型態
+        """
         washout_list = []
-        try:
-            for ticker, name in tech_leaders.items():
-                df = yf.Ticker(ticker).history(period="15d")
+        # 為避免 yfinance 頻繁抓取被阻斷，我們精選前 25 檔籌碼最頂尖的個股進行深度 K 線運算
+        scan_pool = candidate_stocks[:25]
+        
+        for s in scan_pool:
+            stock_id = s['id']
+            name = s['name']
+            
+            # 轉換為 yfinance 格式 (上市為 .TW，上櫃為 .TWO，這裡針對常見上市股票優化)
+            ticker_id = f"{stock_id}.TW" if not stock_id.startswith('00') else None
+            if not ticker_id: continue
+                
+            try:
+                df = yf.Ticker(ticker_id).history(period="15d")
+                # 如果是剛上櫃或代碼不對抓不到，嘗試改用 .TWO 抓取
+                if len(df) < 10:
+                    df = yf.Ticker(f"{stock_id}.TWO").history(period="15d")
                 if len(df) < 10: continue
                 
-                # 計算近 10 日主力建倉成本 (VWAP - 成交量加權平均價)
+                # 🎯 計算近 10 日大戶建倉成本 (VWAP - 成交量加權平均價)
                 recent_10d = df.tail(10)
                 vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / recent_10d['Volume'].sum()
                 
@@ -78,20 +87,20 @@ try:
                 current_vol = df['Volume'].iloc[-1]
                 
                 # 🎯 起漲點過濾邏輯：
-                # 1. 極致量縮：今日成交量必須小於近 3 日均量
-                # 2. 踩穩主力成本：股價距離 10日VWAP 成本線 上下不超過 2%
+                # 1. 極致量縮：今日成交量小於近 3 日均量
+                # 2. 踩穩主力成本：價格距離 10日VWAP 成本線 上下不超過 2%
                 price_diff_pct = abs(current_price - vwap_10d) / vwap_10d
                 
                 if current_vol < vol_3ma and price_diff_pct <= 0.02:
                     position = "守穩建倉成本" if current_price >= vwap_10d else "成本線下緣"
-                    washout_list.append(f"• {name}: 價 {current_price:.1f} (主力估計成本: {vwap_10d:.1f} | {position}, 量縮)")
-        except Exception as e:
-            return f"\n⚠️ 龍蝦起漲雷達掃描異常: {e}\n"
-        
+                    washout_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} (主力估計成本: {vwap_10d:.1f} | {position}, 量縮)")
+            except:
+                continue
+                
         if washout_list:
-            return "\n🎯【大戶建倉起漲狙擊區 (VWAP成本版)】:\n" + "\n".join(washout_list) + "\n"
+            return "\n🎯【全市場大戶建倉起漲狙擊區 (動態解封版)】:\n" + "\n".join(washout_list) + "\n"
         else:
-            return "\n🎯【大戶建倉起漲狙擊區 (VWAP成本版)】:\n今日無符合量縮且踩穩主力成本之龍頭股。\n"
+            return "\n🎯【全市場大戶建倉起漲狙擊區 (動態解封版)】:\n今日強勢股中，無符合量縮且踩穩主力成本之標的。\n"
 
     # 1. 執行全球風險判定
     score = get_macro_score()
@@ -105,10 +114,7 @@ try:
     # 2. 執行美股夜盤風向
     us_tech_msg = get_us_tech()
 
-    # 3. 執行大俠的科技龍頭 VWAP 洗盤雷達
-    washout_msg = get_washout_leaders()
-
-    # 4. 證交所資料抓取
+    # 3. 證交所資料抓取與動態分析
     target_date = datetime.now()
     data_found = False
     
@@ -133,14 +139,18 @@ try:
                         })
                     except: continue
             
+            # 依照今日外資+投信總和買超排行排序，這會當作我們的動態雷達掃描基礎
             stocks.sort(key=lambda x: x['net'], reverse=True)
+            
+            # 執行全市場動態起漲點掃描 (核心進化：將排序好的熱門籌碼股直接丟進去過濾)
+            washout_msg = scan_dynamic_targets(stocks)
             
             # 組合終極戰報
             msg = f"🦞【戰情室 終極完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
             msg += us_tech_msg
             
-            msg += washout_msg # 科技龍頭主力建倉雷達融合處
+            msg += washout_msg # 插入全新動態雷達訊息
             
             msg += "\n🔥 買超 Top 10:\n"
             for s in stocks[:10]:
