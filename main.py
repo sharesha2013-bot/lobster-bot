@@ -56,39 +56,37 @@ try:
         return ""
 
     def scan_dynamic_targets(candidate_stocks):
-        """
-        [解封核心]：從證交所今日篩選出的強勢候選名單中，動態計算 10日 VWAP 主力成本線與量縮型態
-        """
         washout_list = []
-        # 為避免 yfinance 頻繁抓取被阻斷，我們精選前 25 檔籌碼最頂尖的個股進行深度 K 線運算
-        scan_pool = candidate_stocks[:25]
+        scan_pool = candidate_stocks[:30] # 掃描籌碼最熱的前 30 檔
         
         for s in scan_pool:
             stock_id = s['id']
             name = s['name']
             
-            # 轉換為 yfinance 格式 (上市為 .TW，上櫃為 .TWO，這裡針對常見上市股票優化)
-            ticker_id = f"{stock_id}.TW" if not stock_id.startswith('00') else None
-            if not ticker_id: continue
-                
+            ticker_id = f"{stock_id}.TW"
             try:
                 df = yf.Ticker(ticker_id).history(period="15d")
-                # 如果是剛上櫃或代碼不對抓不到，嘗試改用 .TWO 抓取
                 if len(df) < 10:
                     df = yf.Ticker(f"{stock_id}.TWO").history(period="15d")
                 if len(df) < 10: continue
                 
-                # 🎯 計算近 10 日大戶建倉成本 (VWAP - 成交量加權平均價)
+                # 🚀 跑車濾網：檢查「震幅」與「價格」
+                current_price = df['Close'].iloc[-1]
+                period_high = df['High'].max()
+                period_low = df['Low'].min()
+                amplitude = (period_high - period_low) / period_low
+                
+                # 踢掉股價太低 (<30) 或根本沒在動 (震幅 < 10%) 的殭屍股與存股
+                if current_price < 30 or amplitude < 0.10:
+                    continue
+
+                # 🎯 計算近 10 日 VWAP 大戶建倉成本
                 recent_10d = df.tail(10)
                 vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / recent_10d['Volume'].sum()
                 
-                current_price = df['Close'].iloc[-1]
                 vol_3ma = df['Volume'].tail(3).mean()
                 current_vol = df['Volume'].iloc[-1]
                 
-                # 🎯 起漲點過濾邏輯：
-                # 1. 極致量縮：今日成交量小於近 3 日均量
-                # 2. 踩穩主力成本：價格距離 10日VWAP 成本線 上下不超過 2%
                 price_diff_pct = abs(current_price - vwap_10d) / vwap_10d
                 
                 if current_vol < vol_3ma and price_diff_pct <= 0.02:
@@ -98,9 +96,9 @@ try:
                 continue
                 
         if washout_list:
-            return "\n🎯【全市場大戶建倉起漲狙擊區 (動態解封版)】:\n" + "\n".join(washout_list) + "\n"
+            return "\n🎯【全市場起漲狙擊區 (強勢跑車版)】:\n" + "\n".join(washout_list) + "\n"
         else:
-            return "\n🎯【全市場大戶建倉起漲狙擊區 (動態解封版)】:\n今日強勢股中，無符合量縮且踩穩主力成本之標的。\n"
+            return "\n🎯【全市場起漲狙擊區 (強勢跑車版)】:\n今日強勢股中，無符合量縮且具備高波動之標的。\n"
 
     # 1. 執行全球風險判定
     score = get_macro_score()
@@ -114,7 +112,7 @@ try:
     # 2. 執行美股夜盤風向
     us_tech_msg = get_us_tech()
 
-    # 3. 證交所資料抓取與動態分析
+    # 3. 證交所資料抓取
     target_date = datetime.now()
     data_found = False
     
@@ -131,6 +129,12 @@ try:
                     try:
                         stock_id = row[0].strip()
                         name = row[1].strip()
+                        
+                        # 🛡️ 第一層防禦：直接把 ETF 與傳統防禦股踢出局！
+                        if stock_id.startswith('00'): continue # 踢掉所有 ETF (如 00919, 00929)
+                        if stock_id.startswith('28') or stock_id.startswith('58'): continue # 踢掉金融股
+                        if stock_id.startswith('11') or stock_id.startswith('12') or stock_id.startswith('13') or stock_id.startswith('14'): continue # 踢掉水泥、食品、塑膠、紡織
+                        
                         f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
                         t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
                         net = f_net + t_net
@@ -139,18 +143,15 @@ try:
                         })
                     except: continue
             
-            # 依照今日外資+投信總和買超排行排序，這會當作我們的動態雷達掃描基礎
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
-            # 執行全市場動態起漲點掃描 (核心進化：將排序好的熱門籌碼股直接丟進去過濾)
             washout_msg = scan_dynamic_targets(stocks)
             
-            # 組合終極戰報
             msg = f"🦞【戰情室 終極完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
             msg += us_tech_msg
             
-            msg += washout_msg # 插入全新動態雷達訊息
+            msg += washout_msg 
             
             msg += "\n🔥 買超 Top 10:\n"
             for s in stocks[:10]:
@@ -163,10 +164,9 @@ try:
             msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
             count = 0
             for s in stocks:
-                if not s['id'].startswith('00'): 
-                    if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
-                        msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外資{int(s['f_net']/1000)}/投信{int(s['t_net']/1000)})\n"
-                        count += 1
+                if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
+                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外資{int(s['f_net']/1000)}/投信{int(s['t_net']/1000)})\n"
+                    count += 1
                 if count >= 5: break
                 
             if count == 0:
