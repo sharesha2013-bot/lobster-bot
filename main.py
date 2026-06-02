@@ -10,6 +10,35 @@ def send_msg(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
+def check_undying_bird(stock_id):
+    """🦅 不死鳥濾網：嚴格執行教科書級「放量滯跌」標準"""
+    try:
+        ticker_id = f"{stock_id}.TW"
+        df = yf.Ticker(ticker_id).history(period="10d")
+        if len(df) < 6:  # 確保有足夠天數計算 5 日均量
+            df = yf.Ticker(f"{stock_id}.TWO").history(period="10d")
+        if len(df) < 6: 
+            return False
+        
+        # 1. 爆量標準：今日成交量 > 前五日均量的 2 倍
+        today_vol = df['Volume'].iloc[-1]
+        prev_5d_vol_avg = df['Volume'].iloc[-6:-1].mean()
+        
+        if today_vol < (prev_5d_vol_avg * 2):
+            return False
+            
+        # 2. 滯跌標準：今日跌幅小於 1.5% (即漲跌幅 >= -1.5%)
+        today_close = df['Close'].iloc[-1]
+        yesterday_close = df['Close'].iloc[-2]
+        pct_change = ((today_close - yesterday_close) / yesterday_close) * 100
+        
+        if pct_change >= -1.5:
+            return True
+            
+        return False
+    except:
+        return False
+
 try:
     def get_macro_score():
         score = 0
@@ -56,10 +85,9 @@ try:
         return ""
 
     def scan_pro_targets(candidate_stocks):
-        washout_mode_list = []  # 🎭 洗碗秀清單
-        breakout_mode_list = [] # 🚀 主升段清單
+        washout_mode_list = []  
+        breakout_mode_list = [] 
         
-        # 擴大掃描到當日法人買超前 50 名，抓出潛藏的獵物
         scan_pool = candidate_stocks[:50] 
         
         for s in scan_pool:
@@ -68,7 +96,6 @@ try:
             
             ticker_id = f"{stock_id}.TW"
             try:
-                # 抓取 30 天數據確保均線計算正確
                 df = yf.Ticker(ticker_id).history(period="30d")
                 if len(df) < 25:
                     df = yf.Ticker(f"{stock_id}.TWO").history(period="30d")
@@ -77,41 +104,30 @@ try:
                 current_price = df['Close'].iloc[-1]
                 current_vol = df['Volume'].iloc[-1]
                 
-                # 🛡️ 終極濾網 1：大趨勢保護 (均線多頭排列)
                 ma10 = df['Close'].tail(10).mean()
                 ma20 = df['Close'].tail(20).mean()
                 if not (current_price > ma20 and ma10 >= ma20):
-                    continue # 跌破月線或空頭排列，直接剔除
+                    continue 
                 
-                # 計算籌碼防禦與攻擊指標
                 recent_10d = df.tail(10)
                 vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / recent_10d['Volume'].sum()
                 avg_vol_5d = df['Volume'].tail(5).mean()
-                high_10d = recent_10d['High'].max() # 近期大鍋蓋位置
+                high_10d = recent_10d['High'].max() 
                 
                 price_diff_pct = (current_price - vwap_10d) / vwap_10d
 
-                # ---------------------------------------------------------
-                # 🎭 軌道 A：偵測「洗碗秀」(主力吸籌與洗盤)
-                # 條件：守住成本底線 + 量縮 (低於5日均量) + 價格緊貼成本
-                # ---------------------------------------------------------
                 if current_price >= (vwap_10d * 0.99) and current_vol < avg_vol_5d and abs(price_diff_pct) <= 0.03:
                     status = f"守底 {vwap_10d:.1f} | 量縮洗盤中"
                     washout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
 
-                # ---------------------------------------------------------
-                # 🚀 軌道 B：偵測「主升段」(主力點火發動)
-                # 條件：站穩成本之上 + 爆量點火 (大於5日均量1.5倍) + 挑戰近期高點鍋蓋
-                # ---------------------------------------------------------
                 elif current_price >= vwap_10d and current_vol > (avg_vol_5d * 1.5):
-                    if current_price >= (high_10d * 0.98): # 距離鍋蓋不到 2% 或已經突破
+                    if current_price >= (high_10d * 0.98): 
                         status = f"爆量吃鍋蓋! (10日高 {high_10d:.1f})"
                         breakout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
 
             except:
                 continue
                 
-        # 組合戰情報告
         report = "\n🎯【龍蝦戰情室 Pro - 雙軌獵殺名單】\n"
         report += "="*35 + "\n"
         report += "🟢 階段一：洗碗秀 (量縮守底，適合潛伏)\n"
@@ -163,7 +179,6 @@ try:
                         })
                     except: continue
             
-            # 依照法人淨買超排序，確保我們掃描的是「主力真金白銀進場」的標的
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
             pro_msg = scan_pro_targets(stocks)
@@ -171,7 +186,6 @@ try:
             msg = f"🦞【戰情室 Pro 雙軌版｜{target_date.strftime('%Y-%m-%d')}】\n"
             msg += macro_msg
             msg += us_tech_msg
-            
             msg += pro_msg 
             
             msg += "\n🔥 買超 Top 10:\n"
@@ -180,7 +194,9 @@ try:
                 
             msg += "\n⚠️ 倒貨 Top 10:\n"
             for s in stocks[-10:][::-1]:
-                msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張\n"
+                # 🦅 觸發不死鳥判定
+                bird_tag = " 🦅[不死鳥]" if check_undying_bird(s['id']) else ""
+                msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
                 
             msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
             count = 0
