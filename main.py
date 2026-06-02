@@ -28,51 +28,32 @@ def send_msg(text):
         print(f"Telegram 推播失敗: {e}")
 
 # ==========================================
-# 🦅 不死鳥濾網 (靈敏度微調 + 除錯雷達)
+# 🦅 不死鳥濾網 (極簡暴力版：專注價格防守)
 # ==========================================
 def check_undying_bird(stock_id):
     try:
-        # 先嘗試上市 (.TW)，若無資料再嘗試上櫃 (.TWO)
-        df = yf.Ticker(f"{stock_id}.TW").history(period="10d")
-        if df.empty or len(df) < 6:
-            df = yf.Ticker(f"{stock_id}.TWO").history(period="10d")
+        # 只抓最近 5 天的資料就夠了
+        df = yf.Ticker(f"{stock_id}.TW").history(period="5d")
+        if df.empty or len(df) < 2:
+            df = yf.Ticker(f"{stock_id}.TWO").history(period="5d")
             
-        if df.empty or len(df) < 6: 
-            return False
-        
-        # 清理空值，防止運算錯誤
-        df = df.dropna(subset=['Close', 'Volume'])
-        if len(df) < 6:
+        # 🔪 核心殺手鐧：過濾掉清晨 Yahoo 常見的「Volume=0」幽靈K棒
+        df = df[df['Volume'] > 0]
+        if len(df) < 2: 
             return False
             
-        today_vol = df['Volume'].iloc[-1]
-        prev_5d_vol_avg = df['Volume'].iloc[-6:-1].mean()
-        
         today_close = df['Close'].iloc[-1]
         yesterday_close = df['Close'].iloc[-2]
+        
+        # 計算真實漲跌幅
         pct_change = ((today_close - yesterday_close) / yesterday_close) * 100
         
-        # 🚨【大俠專屬除錯雷達】：直接把群創的底牌印在你的電腦畫面上
-        if stock_id == '3481':
-            print(f"🦞【系統監測 3481 群創】")
-            print(f"今日成交量: {today_vol}")
-            print(f"五日均量: {prev_5d_vol_avg}")
-            print(f"今日漲跌幅: {pct_change:.2f}%")
-        
-        # 防呆：避免除以零或無量標的
-        if prev_5d_vol_avg <= 0:
-            return False
-            
-        # 1. 爆量標準：放寬至 1.5 倍以上即可 (避免 Yahoo 數據誤差)
-        # 2. 滯跌標準：跌幅小於 1.5% (即漲跌幅 >= -1.5%)
-        if today_vol >= (prev_5d_vol_avg * 1.5) and pct_change >= -1.5:
+        # 只要在倒貨榜上，且跌幅小於 1.5% (即漲跌幅 >= -1.5)，直接亮燈！
+        if pct_change >= -1.5:
             return True
             
         return False
-    except Exception as e:
-        # 如果發生錯誤，把錯誤原因印出來
-        if stock_id == '3481': 
-            print(f"⚠️ 3481 濾網運算錯誤: {e}")
+    except:
         return False
 
 # ==========================================
@@ -183,7 +164,7 @@ def scan_pro_targets(candidate_stocks):
     return report
 
 # ==========================================
-# 🚀 主程式啟動區 (包含 PRO 級錯誤捕捉)
+# 🚀 主程式啟動區
 # ==========================================
 if __name__ == "__main__":
     try:
@@ -271,7 +252,7 @@ if __name__ == "__main__":
     except ImportError:
         send_msg("⚠️ 系統警報：找不到 yfinance 或 requests 套件！請檢查伺服器環境。")
     except Exception as e:
-        # PRO 級錯誤回報：直接把錯誤明細送到您的 Telegram，不用再盲人摸象！
+        # PRO 級錯誤回報
         error_detail = traceback.format_exc()
         error_msg = f"⚠️ 龍蝦系統 Pro 發生崩潰！\n\n【錯誤摘要】:\n{str(e)}\n\n【工程師追蹤碼】:\n{error_detail[:500]}"
         print(error_msg)
