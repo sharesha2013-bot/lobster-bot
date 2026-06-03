@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import traceback
 import concurrent.futures
@@ -214,10 +215,33 @@ if __name__ == "__main__":
             d_str = target_date.strftime('%Y%m%d')
             url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
             
-            res = requests.get(url, headers=HEADERS, timeout=10).json()
+            try:
+                # 🛡️ 隱身裝甲：暫停 2 秒，避免被證交所機關槍掃射
+                time.sleep(2) 
+                
+                res = requests.get(url, headers=HEADERS, timeout=10)
+                
+                # 🛡️ 檢查是否被擋
+                if res.status_code != 200:
+                    print(f"⚠️ 證交所阻擋請求 (狀態碼: {res.status_code})，尋找前一天...")
+                    target_date -= timedelta(days=1)
+                    continue
+                
+                # 🛡️ 嘗試解析 JSON，抓取例外錯誤
+                res_json = res.json()
+                
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️ 連線失敗: {e}")
+                target_date -= timedelta(days=1)
+                continue
+            except ValueError:
+                print("⚠️ 證交所回傳的不是 JSON，可能被擋了或遇到維修！")
+                target_date -= timedelta(days=1)
+                continue
             
-            if res.get('stat') == 'OK':
-                data = res['data']
+            # 資料正常，開始處理
+            if res_json.get('stat') == 'OK':
+                data = res_json['data']
                 stocks = []
                 for row in data:
                     if len(row) > 18:
@@ -244,7 +268,6 @@ if __name__ == "__main__":
                 msg += us_tech_msg
                 msg += pro_msg 
                 
-                # 🔥 這裡加上了熱度分級系統
                 msg += "\n🔥 買超 Top 10:\n"
                 for s in stocks[:10]:
                     heat_tag = get_heat_level_tag(s['net'])
