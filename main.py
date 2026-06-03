@@ -31,6 +31,24 @@ def send_msg(text):
         print(f"Telegram 推播失敗: {e}")
 
 # ==========================================
+# 📊 教科書級：主力買超熱度分級模組
+# ==========================================
+def get_heat_level_tag(net_buy_shares):
+    """根據買超張數給予教科書級別的熱度標籤"""
+    lots = net_buy_shares / 1000  # 換算成張數
+    
+    if lots >= 80000:
+        return " 🌋[Lv.4 核爆]"
+    elif lots >= 30000:
+        return " 🔥[Lv.3 沸騰]"
+    elif lots >= 10000:
+        return " ♨️[Lv.2 加溫]"
+    elif lots >= 5000:
+        return " ☕[Lv.1 微溫]"
+    else:
+        return ""
+
+# ==========================================
 # 🦅 不死鳥濾網 (PRO版：精準剔除幽靈K線)
 # ==========================================
 def check_undying_bird(stock_id):
@@ -39,7 +57,6 @@ def check_undying_bird(stock_id):
         if df.empty or len(df) < 2:
             df = yf.Ticker(f"{stock_id}.TWO").history(period="5d")
             
-        # 🔪 核心殺手鐧：過濾掉清晨 Yahoo 常見的「Volume=0」幽靈K棒
         df = df[df['Volume'] > 0]
         if len(df) < 2: 
             return False
@@ -47,10 +64,8 @@ def check_undying_bird(stock_id):
         today_close = df['Close'].iloc[-1]
         yesterday_close = df['Close'].iloc[-2]
         
-        # 計算真實漲跌幅
         pct_change = ((today_close - yesterday_close) / yesterday_close) * 100
         
-        # 只要在倒貨榜上，且跌幅小於 1.5% (即漲跌幅 >= -1.5)，直接亮燈！
         if pct_change >= -1.5:
             return True
             
@@ -104,7 +119,6 @@ def get_us_tech():
 # 🎯 雙軌獵殺掃描系統 (PRO 多執行緒版)
 # ==========================================
 def fetch_single_stock(stock):
-    """獨立的抓取函數，供多執行緒調用"""
     stock_id = stock['id']
     try:
         df = yf.Ticker(f"{stock_id}.TW").history(period="30d")
@@ -125,10 +139,8 @@ def scan_pro_targets(candidate_stocks):
     washout_mode_list = []  
     breakout_mode_list = [] 
     
-    # 限制掃描前 40 名
     scan_pool = candidate_stocks[:40] 
     
-    # 🚀 PRO 升級：多執行緒併發處理 (大幅縮短運算時間)
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         results = list(executor.map(fetch_single_stock, scan_pool))
@@ -147,7 +159,6 @@ def scan_pro_targets(candidate_stocks):
         ma10 = df['Close'].tail(10).mean()
         ma20 = df['Close'].tail(20).mean()
         
-        # 基礎濾網：必須在 20MA 之上，且短均線大於長均線 (多頭排列)
         if not (current_price > ma20 and ma10 >= ma20):
             continue 
         
@@ -161,12 +172,10 @@ def scan_pro_targets(candidate_stocks):
         
         price_diff_pct = (current_price - vwap_10d) / vwap_10d
 
-        # 🎭 軌道 A：洗碗秀 (量縮至5日均量75%以下 + 守底 VWAP)
         if current_price >= (vwap_10d * 0.98) and current_vol < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
             status = f"守底 {vwap_10d:.1f} | 量縮洗盤"
             washout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
 
-        # 🚀 軌道 B：主升段 (爆量達1.5倍 + 實體紅K + 突破10日高點區間)
         elif current_price >= vwap_10d and current_vol > (avg_vol_5d * 1.5) and current_price > yesterday_price:
             if current_price >= (high_10d * 0.98): 
                 status = f"爆量點火! (前高 {high_10d:.1f})"
@@ -188,7 +197,6 @@ def scan_pro_targets(candidate_stocks):
 # ==========================================
 if __name__ == "__main__":
     try:
-        # 1. 全球風險判定
         score = get_macro_score()
         if score >= 75:
             macro_msg = f"🚨【全球防禦警報：{score} 分】市場風暴來襲，請啟動絕對防禦！\n"
@@ -197,10 +205,8 @@ if __name__ == "__main__":
         else:
             macro_msg = f"🟢【全球風險評估：{score} 分】全球市場安全，焦點看個股籌碼。\n"
 
-        # 2. 美股夜盤風向
         us_tech_msg = get_us_tech()
 
-        # 3. 證交所資料抓取
         target_date = datetime.now()
         data_found = False
         
@@ -229,10 +235,8 @@ if __name__ == "__main__":
                             })
                         except: continue
                 
-                # 依總買超量排序
                 stocks.sort(key=lambda x: x['net'], reverse=True)
                 
-                # 執行多執行緒高速掃描
                 pro_msg = scan_pro_targets(stocks)
                 
                 msg = f"🦞【戰情室 Pro 雙軌版｜{target_date.strftime('%Y-%m-%d')}】\n"
@@ -240,9 +244,11 @@ if __name__ == "__main__":
                 msg += us_tech_msg
                 msg += pro_msg 
                 
+                # 🔥 這裡加上了熱度分級系統
                 msg += "\n🔥 買超 Top 10:\n"
                 for s in stocks[:10]:
-                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張\n"
+                    heat_tag = get_heat_level_tag(s['net'])
+                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}\n"
                     
                 msg += "\n⚠️ 倒貨 Top 10:\n"
                 for s in stocks[-10:][::-1]:
@@ -252,7 +258,6 @@ if __name__ == "__main__":
                 msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
                 count = 0
                 for s in stocks:
-                    # 篩選條件：外資投信同買，且總買超大於 1000 張 (1,000,000 股)
                     if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
                         msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
                         count += 1
