@@ -1,4 +1,4 @@
-Import os
+import os
 import time
 import requests
 import traceback
@@ -305,6 +305,3 @@ if __name__ == "__main__":
         error_msg = f"⚠️ 龍蝦系統 Pro 發生崩潰！\n\n【錯誤摘要】:\n{str(e)}\n\n【工程師追蹤碼】:\n{error_detail[:500]}"
         print(error_msg)
         send_msg(error_msg)
-
-
-
