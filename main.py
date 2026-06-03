@@ -40,6 +40,7 @@ def get_heat_level_tag(net_buy_shares):
     return ""
 
 def get_squeeze_tag(borrow_lots):
+    """軋空燃料雷達：偵測借券餘額"""
     if borrow_lots >= 300000:
         return f" 🚀[核爆軋空:借券{borrow_lots//10000}萬張]"
     elif borrow_lots >= 100000:
@@ -47,12 +48,9 @@ def get_squeeze_tag(borrow_lots):
     return ""
 
 # ==========================================
-# 🦅 不死鳥濾網 2.0 (已修復時空錯亂，嚴格對齊 target_date)
+# 🦅 不死鳥濾網 2.0 (嚴格對齊日期)
 # ==========================================
 def check_undying_bird(stock_id, target_date_str):
-    """
-    target_date_str: YYYYMMDD 格式，確保 K 線與籌碼是同一天
-    """
     try:
         df = yf.Ticker(f"{stock_id}.TW").history(period="1mo")
         if df.empty or len(df) < 2:
@@ -61,16 +59,14 @@ def check_undying_bird(stock_id, target_date_str):
         df = df[df['Volume'] > 0]
         if len(df) < 2: return ""
 
-        # 移除時區以便比對
         df.index = df.index.tz_localize(None)
         df['date_str'] = df.index.strftime('%Y%m%d')
         
-        # 尋找與籌碼同一天的 K 線資料
         if target_date_str not in df['date_str'].values:
             return ""
             
         target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
-        if target_idx < 1: return "" # 找不到前一天無法算跌幅
+        if target_idx < 1: return "" 
         
         target_close = df['Close'].iloc[target_idx]
         yesterday_close = df['Close'].iloc[target_idx - 1]
@@ -127,7 +123,6 @@ def fetch_single_stock(args):
         df.index = df.index.tz_localize(None)
         df['date_str'] = df.index.strftime('%Y%m%d')
         
-        # 截斷到 target_date_str 為止的資料，防止拿未來的資料算均線
         if target_date_str in df['date_str'].values:
             target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
             df = df.iloc[:target_idx + 1]
@@ -181,20 +176,18 @@ def scan_pro_targets(candidate_stocks, target_date_str):
 def get_borrow_data(date_str):
     """使用新版 RWD API 爬取借券，避開舊版阻擋"""
     try:
-        # 改用較不容易被擋的 RWD API
         url = f"https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U?date={date_str}&response=json"
         time.sleep(1) 
         res = requests.get(url, headers=HEADERS, timeout=10).json()
         borrow_dict = {}
         if res.get('stat') == 'OK':
             fields = res.get('fields', [])
-            # 尋找「借券賣出餘額」
             target_idx = -1
             for i, f in enumerate(fields):
                 if '借券賣出' in f and '餘額' in f:
                     target_idx = i
                     break
-            if target_idx == -1: target_idx = 12 # 盲狙預設值
+            if target_idx == -1: target_idx = 12 
                 
             for row in res['data']:
                 try:
@@ -211,7 +204,6 @@ def get_borrow_data(date_str):
 # ==========================================
 if __name__ == "__main__":
     try:
-        # 強制轉換為台灣時間 (避免 GitHub Actions UTC 時差問題)
         tw_now = datetime.utcnow() + timedelta(hours=8)
         
         score = get_macro_score()
@@ -252,13 +244,10 @@ if __name__ == "__main__":
                 
                 stocks.sort(key=lambda x: x['net'], reverse=True)
                 
-                # 取得當日借券燃料數據 (修正版)
                 borrow_data = get_borrow_data(d_str)
-                
-                # 傳入 d_str 確保日期一致
                 pro_msg = scan_pro_targets(stocks, d_str)
                 
-                msg = f"🦞【戰情室 Pro 修正版｜{target_date.strftime('%Y-%m-%d')}】\n"
+                msg = f"🦞【戰情室 Pro 完全版｜{target_date.strftime('%Y-%m-%d')}】\n"
                 msg += macro_msg + us_tech_msg + pro_msg 
                 
                 msg += "\n🔥 買超 Top 10 (含軋空燃料):\n"
@@ -267,12 +256,14 @@ if __name__ == "__main__":
                     squeeze_tag = get_squeeze_tag(borrow_data.get(s['id'], 0))
                     msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}{squeeze_tag}\n"
                     
-                msg += "\n⚠️ 倒貨警報 (只列出主力硬扛不死鳥):\n"
+                msg += "\n⚠️ 倒貨警報 (不死鳥 + 軋空燃料):\n"
                 found_bird = False
                 for s in stocks[-10:][::-1]:
                     bird_tag = check_undying_bird(s['id'], d_str)
                     if bird_tag:
-                        msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
+                        # 👇 這裡補上軋空雷達，讓倒貨榜的妖股現形！
+                        squeeze_tag = get_squeeze_tag(borrow_data.get(s['id'], 0))
+                        msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}{squeeze_tag}\n"
                         found_bird = True
                 if not found_bird:
                     msg += "今日無符合條件的不死鳥標的。\n"
