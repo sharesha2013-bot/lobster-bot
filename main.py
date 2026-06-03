@@ -68,6 +68,7 @@ def check_undying_bird(stock_id):
         
         pct_change = ((today_close - yesterday_close) / yesterday_close) * 100
         
+        # 只要跌幅小於 1.5%，即視為主力強撐
         if pct_change >= -1.5:
             return f" 🦅[不死鳥 {pct_change:+.1f}%]"
             
@@ -185,17 +186,30 @@ def scan_pro_targets(candidate_stocks):
     return report
 
 def get_borrow_data(date_str):
-    """偷看外資底牌：爬取當日借券賣出餘額"""
+    """偷看外資底牌：智慧爬取當日借券賣出餘額"""
     try:
         url = f"https://www.twse.com.tw/exchangeReport/TWT93U?response=json&date={date_str}"
         time.sleep(1) # 隱身裝甲
         res = requests.get(url, headers=HEADERS, timeout=10).json()
         borrow_dict = {}
         if res.get('stat') == 'OK':
+            # 智慧追蹤欄位：自動尋找含有「借券」與「餘額」的欄位索引
+            fields = res.get('fields', [])
+            target_idx = -1
+            for i, f in enumerate(fields):
+                if '借券' in f and '餘額' in f:
+                    target_idx = i
+                    break
+            
+            # 萬一標頭改版找不到，啟用盲狙預設值(通常在倒數第2或第14欄)
+            if target_idx == -1: 
+                target_idx = 14 
+                
             for row in res['data']:
                 try:
                     s_id = row[0].strip()
-                    balance_shares = int(row[6].replace(',', '')) # 本日餘額(股)
+                    idx = target_idx if target_idx < len(row) else -2
+                    balance_shares = int(row[idx].replace(',', '')) 
                     borrow_dict[s_id] = balance_shares // 1000 # 換算成張數
                 except: continue
         return borrow_dict
@@ -248,7 +262,7 @@ if __name__ == "__main__":
                 stocks.sort(key=lambda x: x['net'], reverse=True)
                 pro_msg = scan_pro_targets(stocks)
                 
-                # 取得當日借券燃料數據
+                # 取得當日借券燃料數據 (修正版)
                 borrow_data = get_borrow_data(d_str)
                 
                 msg = f"🦞【戰情室 Pro 完全體｜{target_date.strftime('%Y-%m-%d')}】\n"
@@ -293,3 +307,4 @@ if __name__ == "__main__":
         error_detail = traceback.format_exc()
         error_msg = f"⚠️ 龍蝦系統 Pro 發生崩潰！\n\n【錯誤摘要】:\n{str(e)}\n\n【工程師追蹤碼】:\n{error_detail[:500]}"
         print(error_msg)
+        send_msg(error_msg)
