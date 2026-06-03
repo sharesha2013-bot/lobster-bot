@@ -1,8 +1,10 @@
 import os
 import requests
 import traceback
+import concurrent.futures
 from datetime import datetime, timedelta
 import yfinance as yf
+import pandas as pd
 
 # ==========================================
 # ⚙️ 系統設定區
@@ -19,7 +21,8 @@ HEADERS = {
 def send_msg(text):
     """傳送 Telegram 訊息"""
     if not BOT_TOKEN:
-        print("⚠️ 錯誤：找不到 BOT_TOKEN 環境變數")
+        print("⚠️ 尚未設定 BOT_TOKEN 環境變數。以下為系統測試輸出：\n")
+        print(text)
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -28,11 +31,10 @@ def send_msg(text):
         print(f"Telegram 推播失敗: {e}")
 
 # ==========================================
-# 🦅 不死鳥濾網 (極簡暴力版：專注價格防守)
+# 🦅 不死鳥濾網 (PRO版：精準剔除幽靈K線)
 # ==========================================
 def check_undying_bird(stock_id):
     try:
-        # 只抓最近 5 天的資料就夠了
         df = yf.Ticker(f"{stock_id}.TW").history(period="5d")
         if df.empty or len(df) < 2:
             df = yf.Ticker(f"{stock_id}.TWO").history(period="5d")
@@ -99,58 +101,76 @@ def get_us_tech():
     return ""
 
 # ==========================================
-# 🎯 雙軌獵殺掃描系統
+# 🎯 雙軌獵殺掃描系統 (PRO 多執行緒版)
 # ==========================================
+def fetch_single_stock(stock):
+    """獨立的抓取函數，供多執行緒調用"""
+    stock_id = stock['id']
+    try:
+        df = yf.Ticker(f"{stock_id}.TW").history(period="30d")
+        if df.empty or len(df) < 20:
+            df = yf.Ticker(f"{stock_id}.TWO").history(period="30d")
+        if df.empty or len(df) < 20: 
+            return None
+            
+        df = df[df['Volume'] > 0].dropna(subset=['Close', 'Volume'])
+        if len(df) < 20:
+            return None
+            
+        return {'stock': stock, 'df': df}
+    except:
+        return None
+
 def scan_pro_targets(candidate_stocks):
     washout_mode_list = []  
     breakout_mode_list = [] 
     
-    # 限制掃描前 40 名，確保執行速度不會 Timeout
+    # 限制掃描前 40 名
     scan_pool = candidate_stocks[:40] 
     
-    for s in scan_pool:
-        stock_id = s['id']
-        name = s['name']
+    # 🚀 PRO 升級：多執行緒併發處理 (大幅縮短運算時間)
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(fetch_single_stock, scan_pool))
+    
+    for res in results:
+        if not res: continue
         
-        try:
-            df = yf.Ticker(f"{stock_id}.TW").history(period="30d")
-            if df.empty or len(df) < 25:
-                df = yf.Ticker(f"{stock_id}.TWO").history(period="30d")
-            
-            if df.empty or len(df) < 25: 
-                continue
-                
-            df = df.dropna(subset=['Close', 'Volume'])
-            current_price = df['Close'].iloc[-1]
-            current_vol = df['Volume'].iloc[-1]
-            
-            ma10 = df['Close'].tail(10).mean()
-            ma20 = df['Close'].tail(20).mean()
-            if not (current_price > ma20 and ma10 >= ma20):
-                continue 
-            
-            recent_10d = df.tail(10)
-            vol_sum = recent_10d['Volume'].sum()
-            if vol_sum == 0: continue # 避開無量死水股
-            
-            vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / vol_sum
-            avg_vol_5d = df['Volume'].tail(5).mean()
-            high_10d = recent_10d['High'].max() 
-            
-            price_diff_pct = (current_price - vwap_10d) / vwap_10d
+        stock_id = res['stock']['id']
+        name = res['stock']['name']
+        df = res['df']
+        
+        current_price = df['Close'].iloc[-1]
+        yesterday_price = df['Close'].iloc[-2]
+        current_vol = df['Volume'].iloc[-1]
+        
+        ma10 = df['Close'].tail(10).mean()
+        ma20 = df['Close'].tail(20).mean()
+        
+        # 基礎濾網：必須在 20MA 之上，且短均線大於長均線 (多頭排列)
+        if not (current_price > ma20 and ma10 >= ma20):
+            continue 
+        
+        recent_10d = df.tail(10)
+        vol_sum = recent_10d['Volume'].sum()
+        if vol_sum == 0: continue 
+        
+        vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / vol_sum
+        avg_vol_5d = df['Volume'].tail(5).mean()
+        high_10d = recent_10d['High'].max() 
+        
+        price_diff_pct = (current_price - vwap_10d) / vwap_10d
 
-            # 🎭 軌道 A：洗碗秀
-            if current_price >= (vwap_10d * 0.99) and current_vol < avg_vol_5d and abs(price_diff_pct) <= 0.03:
-                status = f"守底 {vwap_10d:.1f} | 量縮洗盤中"
-                washout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
+        # 🎭 軌道 A：洗碗秀 (量縮至5日均量75%以下 + 守底 VWAP)
+        if current_price >= (vwap_10d * 0.98) and current_vol < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
+            status = f"守底 {vwap_10d:.1f} | 量縮洗盤"
+            washout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
 
-            # 🚀 軌道 B：主升段
-            elif current_price >= vwap_10d and current_vol > (avg_vol_5d * 1.5):
-                if current_price >= (high_10d * 0.98): 
-                    status = f"爆量吃鍋蓋! (10日高 {high_10d:.1f})"
-                    breakout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
-        except Exception:
-            continue
+        # 🚀 軌道 B：主升段 (爆量達1.5倍 + 實體紅K + 突破10日高點區間)
+        elif current_price >= vwap_10d and current_vol > (avg_vol_5d * 1.5) and current_price > yesterday_price:
+            if current_price >= (high_10d * 0.98): 
+                status = f"爆量點火! (前高 {high_10d:.1f})"
+                breakout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
             
     report = "\n🎯【龍蝦戰情室 Pro - 雙軌獵殺名單】\n"
     report += "="*35 + "\n"
@@ -188,7 +208,6 @@ if __name__ == "__main__":
             d_str = target_date.strftime('%Y%m%d')
             url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
             
-            # 加上 Timeout 防止程式卡死
             res = requests.get(url, headers=HEADERS, timeout=10).json()
             
             if res.get('stat') == 'OK':
@@ -210,8 +229,10 @@ if __name__ == "__main__":
                             })
                         except: continue
                 
+                # 依總買超量排序
                 stocks.sort(key=lambda x: x['net'], reverse=True)
                 
+                # 執行多執行緒高速掃描
                 pro_msg = scan_pro_targets(stocks)
                 
                 msg = f"🦞【戰情室 Pro 雙軌版｜{target_date.strftime('%Y-%m-%d')}】\n"
@@ -225,13 +246,13 @@ if __name__ == "__main__":
                     
                 msg += "\n⚠️ 倒貨 Top 10:\n"
                 for s in stocks[-10:][::-1]:
-                    # 🦅 觸發不死鳥判定
                     bird_tag = " 🦅[不死鳥]" if check_undying_bird(s['id']) else ""
                     msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
                     
                 msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
                 count = 0
                 for s in stocks:
+                    # 篩選條件：外資投信同買，且總買超大於 1000 張 (1,000,000 股)
                     if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
                         msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
                         count += 1
@@ -252,7 +273,6 @@ if __name__ == "__main__":
     except ImportError:
         send_msg("⚠️ 系統警報：找不到 yfinance 或 requests 套件！請檢查伺服器環境。")
     except Exception as e:
-        # PRO 級錯誤回報
         error_detail = traceback.format_exc()
         error_msg = f"⚠️ 龍蝦系統 Pro 發生崩潰！\n\n【錯誤摘要】:\n{str(e)}\n\n【工程師追蹤碼】:\n{error_detail[:500]}"
         print(error_msg)
