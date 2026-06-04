@@ -54,23 +54,19 @@ def check_undying_bird(stock_id, target_date_str):
         df.index = df.index.tz_localize(None)
         df['date_str'] = df.index.strftime('%Y%m%d')
         
-        if target_date_str not in df['date_str'].values:
-            return ""
+        if target_date_str not in df['date_str'].values: return ""
             
         target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
         if target_idx < 1: return "" 
         
         target_close = df['Close'].iloc[target_idx]
         yesterday_close = df['Close'].iloc[target_idx - 1]
-        
         pct_change = ((target_close - yesterday_close) / yesterday_close) * 100
         
         if pct_change >= -1.5:
             return f" 🦅[不死鳥 {pct_change:+.1f}%]"
-            
         return ""
-    except:
-        return ""
+    except: return ""
 
 # ==========================================
 # 🌍 總體經濟與大盤風向
@@ -102,7 +98,7 @@ def get_us_tech():
     return ""
 
 # ==========================================
-# 🎯 雙軌獵殺掃描系統
+# 🎯 雙軌獵殺掃描系統 (攻擊區)
 # ==========================================
 def fetch_single_stock(args):
     stock, target_date_str = args
@@ -166,7 +162,62 @@ def scan_pro_targets(candidate_stocks, target_date_str):
     return report
 
 # ==========================================
-# 🚀 主程式啟動區 (雙引擎不敗版)
+# 💀 高危險雷區掃描 (防禦區 - 新增絕招)
+# ==========================================
+def scan_warning_targets(all_stocks):
+    warning_msg = "\n💀【高危險雷區｜請勿接刀】\n===================================\n"
+    
+    # 絕招一：🔪 投信背刺結帳 (尋找投信狂倒貨的股票)
+    # 邏輯：從全市場抓出投信賣超最兇的前 5 名，且賣超超過 1500 張
+    it_dump_list = sorted([s for s in all_stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
+    warning_msg += "🔪 投信無情結帳 (法人跑路):\n"
+    if it_dump_list:
+        for s in it_dump_list:
+            warning_msg += f"• {s['id']} {s['name']}: 投信大賣 {abs(int(s['t_net']/1000))} 千張\n"
+    else:
+        warning_msg += "無明顯投信結帳跡象。\n"
+
+    # 絕招二：⚡ 散戶絞肉機 (避雷針掃描)
+    # 邏輯：掃描法人「賣超排行榜前 30 名」，找尋爆出大於 5日均量 1.5倍，且留長上影線的股票
+    warning_msg += "\n⚡ 散戶絞肉機 (爆天量避雷針):\n"
+    worst_stocks = sorted(all_stocks, key=lambda x: x['net'])[:30] # 抓出賣壓最重的 30 檔
+    rod_list = []
+    
+    def check_lightning_rod(stock):
+        stock_id = stock['id']
+        try:
+            df = yf.Ticker(f"{stock_id}.TW").history(period="10d")
+            if df.empty: df = yf.Ticker(f"{stock_id}.TWO").history(period="10d")
+            if len(df) < 5: return None
+            
+            current = df.iloc[-1]
+            avg_vol_5d = df['Volume'].tail(5).mean()
+            
+            # 條件：爆量 1.5倍 + 上影線大於實體K線2倍
+            if current['Volume'] > (avg_vol_5d * 1.5):
+                body_len = abs(current['Close'] - current['Open'])
+                upper_shadow = current['High'] - max(current['Close'], current['Open'])
+                lower_shadow = min(current['Close'], current['Open']) - current['Low']
+                
+                # 上影線很長，且沒有下影線支撐 (標準避雷針)
+                if upper_shadow > (body_len * 2) and upper_shadow > lower_shadow:
+                    return f"• {stock_id} {stock['name']}: 價 {current['Close']:.1f} (高點 {current['High']:.1f} 被出貨)"
+        except: return None
+        return None
+
+    # 用多執行緒光速查這 30 檔的 K 線
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        rod_results = list(executor.map(check_lightning_rod, worst_stocks))
+        
+    for res in rod_results:
+        if res: rod_list.append(res)
+        
+    warning_msg += "\n".join(rod_list) if rod_list else "無爆量避雷針出現。"
+    warning_msg += "\n===================================\n"
+    return warning_msg
+
+# ==========================================
+# 🚀 主程式啟動區
 # ==========================================
 if __name__ == "__main__":
     try:
@@ -183,12 +234,12 @@ if __name__ == "__main__":
         
         stocks = []
         
-        # 🚀 [主引擎]：官方 Open API (加上了 HEADERS 消音器！)
+        # 🚀 官方 Open API
         api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
         try:
             res = requests.get(api_url, headers=HEADERS, timeout=10)
             if res.status_code == 200:
-                data = res.json() # 如果被擋回傳 HTML，這裡會報錯直接跳到 except
+                data = res.json()
                 for row in data:
                     stock_id = row.get('Code', '').strip()
                     name = row.get('Name', '').strip()
@@ -198,9 +249,9 @@ if __name__ == "__main__":
                     net = int(str(row.get('Difference', '0')).replace(',', ''))
                     stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net})
         except Exception as e:
-            print(f"Open API 遇到干擾: {e}，啟動備用引擎...")
+            print(f"Open API 遇到干擾: {e}")
             
-        # 🛡️ [備用引擎]：如果主引擎沒抓到資料，自動切換舊版網頁 API
+        # 🛡️ 備用網頁 API
         if not stocks:
             url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
             try:
@@ -219,16 +270,19 @@ if __name__ == "__main__":
             except Exception as backup_e:
                 print(f"備用引擎也失敗: {backup_e}")
 
-        # 最後確認資料是否到手
+        # 最後推播組合
         if not stocks:
             send_msg(f"❌ 兩套資料引擎皆抓取失敗，證交所可能正在停機維護。")
         else:
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
+            # 1. 產生攻擊區報告
             pro_msg = scan_pro_targets(stocks, d_str)
+            # 2. 產生防禦區報告 (雷區掃描)
+            warning_msg = scan_warning_targets(stocks)
             
             msg = f"🦞【戰情室 Pro 完全版｜{display_date}】\n"
-            msg += macro_msg + us_tech_msg + pro_msg 
+            msg += macro_msg + us_tech_msg + pro_msg + warning_msg
             
             msg += "\n🔥 買超 Top 10:\n"
             for s in stocks[:10]:
