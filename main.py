@@ -73,8 +73,10 @@ def check_undying_bird(stock_id, target_date_str):
             
         df = df[df['Volume'] > 0]
         if len(df) < 2: return ""
+
         df.index = df.index.tz_localize(None)
         df['date_str'] = df.index.strftime('%Y%m%d')
+        
         if target_date_str not in df['date_str'].values: return ""
             
         target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
@@ -90,10 +92,10 @@ def check_undying_bird(stock_id, target_date_str):
     except: return ""
 
 # ==========================================
-# 🎯 核心大腦：多重兵法統一掃描引擎
+# 🎯 核心大腦：攻防分離統一掃描引擎
 # ==========================================
 def analyze_stock(args):
-    stock, target_date_str = args
+    stock, target_date_str, rank = args
     stock_id = stock['id']
     try:
         df = yf.Ticker(f"{stock_id}.TW").history(period="1mo")
@@ -125,16 +127,17 @@ def analyze_stock(args):
         
         res = {'stock': stock, 'washout': False, 'breakout': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current}
         
-        # 1. 雙軌獵殺 (限定多頭趨勢)
-        if current['Close'] > ma20 and ma10 >= ma20:
-            price_diff_pct = (current['Close'] - vwap_10d) / vwap_10d
-            if current['Close'] >= (vwap_10d * 0.98) and current['Volume'] < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
-                res['washout'] = True
-            if current['Close'] >= vwap_10d and current['Volume'] > (avg_vol_5d * 1.5) and current['Close'] > yesterday['Close']:
-                if current['Close'] >= (high_10d * 0.98):
-                    res['breakout'] = True
+        # 1. 雙軌獵殺 (🌟 僅限前 40 名菁英)
+        if rank <= 40:
+            if current['Close'] > ma20 and ma10 >= ma20:
+                price_diff_pct = (current['Close'] - vwap_10d) / vwap_10d
+                if current['Close'] >= (vwap_10d * 0.98) and current['Volume'] < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
+                    res['washout'] = True
+                if current['Close'] >= vwap_10d and current['Volume'] > (avg_vol_5d * 1.5) and current['Close'] > yesterday['Close']:
+                    if current['Close'] >= (high_10d * 0.98):
+                        res['breakout'] = True
 
-        # 2. 闇黑兵法
+        # 2. 闇黑兵法 (全域掃描，不受排名限制)
         # 🪤 破底翻：跌破過去9天低點，但收盤拉紅且高於昨天收盤
         if current['Low'] < past_9d_low and current['Close'] > yesterday['Close'] and current['Close'] > current['Open']:
             res['fake_bd'] = True
@@ -144,7 +147,7 @@ def analyze_stock(args):
         if current['Close'] > ma20 and current['Volume'] < (avg_vol_5d * 0.35) and amplitude < 0.015:
             res['dry_up'] = True
 
-        # 3. 避雷針掃描
+        # 3. 避雷針掃描 (全域掃描，不受排名限制)
         if current['Volume'] > (avg_vol_5d * 1.5):
             body_len = abs(current['Close'] - current['Open'])
             upper_shadow = current['High'] - max(current['Close'], current['Open'])
@@ -214,9 +217,16 @@ if __name__ == "__main__":
         else:
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
-            # 🔥 擴大雷達網：取買超前 150 名 + 賣超前 50 名 (共200檔) 進行光速掃描
-            scan_pool = stocks[:150] + stocks[-50:]
-            scan_args = [(s, d_str) for s in scan_pool]
+            # 🔥 掃描池建構：攻擊與防禦階級脫鉤
+            scan_args = []
+            
+            # 1. 買超前 150 名 (附帶 1~150 的真實排名，前 40 名會觸發攻擊雷達)
+            for i, s in enumerate(stocks[:150]):
+                scan_args.append((s, d_str, i + 1))
+                
+            # 2. 賣超最慘 50 名 (排名設為 999，專職防禦與暗黑掃描)
+            for s in stocks[-50:]:
+                scan_args.append((s, d_str, 999))
             
             washout_list, breakout_list = [], []
             fake_bd_list, dry_up_list = [], []
@@ -238,7 +248,7 @@ if __name__ == "__main__":
                 if res['dry_up']: dry_up_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (籌碼極度鎖死)")
                 if res['rod']: rod_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
 
-            # 🔪 投信背刺名單 (全市場掃描，獨立於 K 線外)
+            # 🔪 投信背刺名單 (全市場掃描，抓取投信賣超大於 1500 張)
             it_dump_list = sorted([s for s in stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
             
             # ================= 組合報告 =================
@@ -256,7 +266,7 @@ if __name__ == "__main__":
             msg += "\n💀【高危雷區｜請勿接刀】\n========================\n"
             msg += "🔪 投信無情結帳:\n"
             if it_dump_list:
-                for s in it_dump_list: msg += f"• {s['id']} {s['name']}: 賣 {abs(int(s['t_net']/1000))} 千張\n"
+                for s in it_dump_list: msg += f"• {s['id']} {s['name']}: 賣 {abs(int(s['t_net']/1000))} 張\n"
             else: msg += "無\n"
             msg += "⚡ 散戶絞肉機 (避雷針):\n" + ("\n".join(rod_list) if rod_list else "無") + "\n"
             
@@ -272,6 +282,16 @@ if __name__ == "__main__":
                     msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
                     found_bird = True
             if not found_bird: msg += "無\n"
+            
+            # 土洋合買快篩
+            msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
+            count = 0
+            for s in stocks:
+                if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
+                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
+                    count += 1
+                if count >= 5: break
+            if count == 0: msg += "無土洋合買標的。\n"
                 
             send_msg(msg)
 
