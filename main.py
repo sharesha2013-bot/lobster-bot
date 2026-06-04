@@ -39,14 +39,6 @@ def get_heat_level_tag(net_buy_shares):
     elif lots >= 5000: return " ☕[Lv.1 微溫]"
     return ""
 
-def get_squeeze_tag(borrow_lots):
-    """軋空燃料雷達：偵測借券餘額"""
-    if borrow_lots >= 300000:
-        return f" 🚀[核爆軋空:借券{borrow_lots//10000}萬張]"
-    elif borrow_lots >= 100000:
-        return f" 🔥[潛力軋空:借券{borrow_lots//10000}萬張]"
-    return ""
-
 # ==========================================
 # 🦅 不死鳥濾網 2.0 (嚴格對齊日期)
 # ==========================================
@@ -173,32 +165,6 @@ def scan_pro_targets(candidate_stocks, target_date_str):
     report += "\n===================================\n"
     return report
 
-def get_borrow_data(date_str):
-    """使用新版 RWD API 爬取借券，避開舊版阻擋"""
-    try:
-        url = f"https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U?date={date_str}&response=json"
-        time.sleep(1) 
-        res = requests.get(url, headers=HEADERS, timeout=10).json()
-        borrow_dict = {}
-        if res.get('stat') == 'OK':
-            fields = res.get('fields', [])
-            target_idx = -1
-            for i, f in enumerate(fields):
-                if '借券賣出' in f and '餘額' in f:
-                    target_idx = i
-                    break
-            if target_idx == -1: target_idx = 12 
-                
-            for row in res['data']:
-                try:
-                    s_id = row[0].strip()
-                    idx = target_idx if target_idx < len(row) else -2
-                    balance_shares = int(row[idx].replace(',', '')) 
-                    borrow_dict[s_id] = balance_shares // 1000 
-                except: continue
-        return borrow_dict
-    except: return {}
-
 # ==========================================
 # 🚀 主程式啟動區
 # ==========================================
@@ -244,26 +210,22 @@ if __name__ == "__main__":
                 
                 stocks.sort(key=lambda x: x['net'], reverse=True)
                 
-                borrow_data = get_borrow_data(d_str)
                 pro_msg = scan_pro_targets(stocks, d_str)
                 
                 msg = f"🦞【戰情室 Pro 完全版｜{target_date.strftime('%Y-%m-%d')}】\n"
                 msg += macro_msg + us_tech_msg + pro_msg 
                 
-                msg += "\n🔥 買超 Top 10 (含軋空燃料):\n"
+                msg += "\n🔥 買超 Top 10:\n"
                 for s in stocks[:10]:
                     heat_tag = get_heat_level_tag(s['net'])
-                    squeeze_tag = get_squeeze_tag(borrow_data.get(s['id'], 0))
-                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}{squeeze_tag}\n"
+                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}\n"
                     
-                msg += "\n⚠️ 倒貨警報 (不死鳥 + 軋空燃料):\n"
+                msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
                 found_bird = False
                 for s in stocks[-10:][::-1]:
                     bird_tag = check_undying_bird(s['id'], d_str)
                     if bird_tag:
-                        # 👇 這裡補上軋空雷達，讓倒貨榜的妖股現形！
-                        squeeze_tag = get_squeeze_tag(borrow_data.get(s['id'], 0))
-                        msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}{squeeze_tag}\n"
+                        msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
                         found_bird = True
                 if not found_bird:
                     msg += "今日無符合條件的不死鳥標的。\n"
