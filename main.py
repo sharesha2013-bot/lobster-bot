@@ -175,32 +175,4 @@ def analyze_stock(args):
         if current['Close'] > ma20 and current['Volume'] < (avg_vol_5d * 0.35) and amplitude < 0.015:
             res['dry_up'] = True
 
-        if current['Volume'] > (avg_vol_5d * 1.5):
-            body_len = abs(current['Close'] - current['Open'])
-            upper_shadow = current['High'] - max(current['Close'], current['Open'])
-            lower_shadow = min(current['Close'], current['Open']) - current['Low']
-            if upper_shadow > (body_len * 2) and upper_shadow > lower_shadow:
-                res['rod'] = True
-
-        return res
-    except: return None
-
-# ==========================================
-# 🚀 主程式啟動區
-# ==========================================
-if __name__ == "__main__":
-    try:
-        tw_now = datetime.utcnow() + timedelta(hours=8)
-        
-        score = get_macro_score()
-        macro_msg = f"🚨【風險：{score}分】風暴來襲！\n" if score >= 75 else (f"⚠️【風險：{score}分】建議觀望。\n" if score >= 50 else f"🟢【風險：{score}分】市場安全。\n")
-        us_tech_msg = get_us_tech()
-        
-        twii = yf.Ticker("^TWII").history(period="5d")
-        latest_date = twii.index[-1]
-        d_str = latest_date.strftime('%Y%m%d')
-        display_date = latest_date.strftime('%Y-%m-%d')
-        
-        stocks = []
-        
-        api_url = "https
+        if current['Volume'] > (avg_vol_5d * 1
