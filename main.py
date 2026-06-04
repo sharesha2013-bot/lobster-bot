@@ -106,7 +106,6 @@ def analyze_stock(args):
             
         df = df[df['Volume'] > 0].dropna(subset=['Close', 'Volume'])
         
-        # 光速抓取總股數 (用於判斷是否為大笨象)
         shares_out = None
         try:
             shares_out = ticker.fast_info.shares
@@ -139,7 +138,6 @@ def analyze_stock(args):
         high_10d = recent_10d['High'].max()
         past_9d_low = df['Low'].iloc[-10:-1].min()
         
-        # 🚀 終極濾網：大牛股/指數工具人強制降級
         net_buy_shares = abs(stock['net'])
         is_heavy_dinosaur = False
         cap_tag = ""
@@ -148,23 +146,19 @@ def analyze_stock(args):
             capital_ratio = net_buy_shares / shares_out
             day_turnover = current['Volume'] / shares_out
             cap_tag = f" | 鎖碼 {capital_ratio*100:.2f}%"
-            # 條件：買超佔總股本 < 0.1% 且 當日週轉率 < 2% -> 無爆發力的大牛股
             if capital_ratio < 0.001 and day_turnover < 0.02:
                 is_heavy_dinosaur = True
         else:
             vol_ratio = (net_buy_shares / current['Volume']) if current['Volume'] > 0 else 0
             cap_tag = f" | 佔量 {vol_ratio*100:.1f}%"
-            # 無股本資料時的備用濾網：5日均量>2萬張 且 買超佔當日成交量不到5%
             if avg_vol_5d > 20000 and vol_ratio < 0.05:
                 is_heavy_dinosaur = True
                 
-        # 若判定為大牛股，剝奪攻擊資格 (降級到雷區掃描)
         if rank <= 40 and is_heavy_dinosaur:
             rank = 999 
         
         res = {'stock': stock, 'washout': False, 'breakout': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current, 'tag': cap_tag}
         
-        # 1. 雙軌獵殺 (🌟 僅限前 40 名且通過輕盈測試的菁英)
         if rank <= 40:
             if current['Close'] > ma20 and ma10 >= ma20:
                 price_diff_pct = (current['Close'] - vwap_10d) / vwap_10d
@@ -174,7 +168,6 @@ def analyze_stock(args):
                     if current['Close'] >= (high_10d * 0.98):
                         res['breakout'] = True
 
-        # 2. 闇黑兵法 (全域掃描，不受排名與股本限制)
         if current['Low'] < past_9d_low and current['Close'] > yesterday['Close'] and current['Close'] > current['Open']:
             res['fake_bd'] = True
             
@@ -182,7 +175,6 @@ def analyze_stock(args):
         if current['Close'] > ma20 and current['Volume'] < (avg_vol_5d * 0.35) and amplitude < 0.015:
             res['dry_up'] = True
 
-        # 3. 避雷針掃描 (全域掃描)
         if current['Volume'] > (avg_vol_5d * 1.5):
             body_len = abs(current['Close'] - current['Open'])
             upper_shadow = current['High'] - max(current['Close'], current['Open'])
@@ -211,84 +203,4 @@ if __name__ == "__main__":
         
         stocks = []
         
-        # 🚀 官方 Open API 引擎
-        api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
-        try:
-            res = requests.get(api_url, headers=HEADERS, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                for row in data:
-                    stock_id = row.get('Code', '').strip()
-                    name = row.get('Name', '').strip()
-                    if not stock_id or stock_id.startswith('00'): continue 
-                    f_net = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', ''))
-                    t_net = int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
-                    net = int(str(row.get('Difference', '0')).replace(',', ''))
-                    stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net})
-        except Exception as e:
-            print(f"Open API 遇到干擾: {e}")
-            
-        # 🛡️ 備用網頁 API
-        if not stocks:
-            url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
-            try:
-                res = requests.get(url, headers=HEADERS, timeout=10)
-                if res.status_code == 200:
-                    res_json = res.json()
-                    if res_json.get('stat') == 'OK':
-                        for row in res_json['data']:
-                            if len(row) > 18:
-                                stock_id = row[0].strip()
-                                name = row[1].strip()
-                                if stock_id.startswith('00'): continue 
-                                f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
-                                t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
-                                stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': f_net + t_net})
-            except Exception as backup_e:
-                print(f"備用引擎也失敗: {backup_e}")
-
-        if not stocks:
-            send_msg(f"❌ 兩套資料引擎皆抓取失敗，證交所可能維護中。")
-        else:
-            stocks.sort(key=lambda x: x['net'], reverse=True)
-            
-            # 🔥 掃描池建構
-            scan_args = []
-            for i, s in enumerate(stocks[:150]):
-                scan_args.append((s, d_str, i + 1))
-            for s in stocks[-50:]:
-                scan_args.append((s, d_str, 999))
-            
-            washout_list, breakout_list = [], []
-            fake_bd_list, dry_up_list = [], []
-            rod_list = []
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-                results = list(executor.map(analyze_stock, scan_args))
-                
-            for res in results:
-                if not res: continue
-                s = res['stock']
-                price = res['current']['Close']
-                tag = res['tag']
-                
-                # 分類歸檔 (攻擊名單加上鎖碼率標籤)
-                if res['washout']: washout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (守底{tag})")
-                if res['breakout']: breakout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (點火{tag})")
-                if res['fake_bd']: fake_bd_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (殺盤洗停損)")
-                if res['dry_up']: dry_up_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (極度鎖死)")
-                if res['rod']: rod_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
-
-            it_dump_list = sorted([s for s in stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
-            
-            # ================= 組合報告 =================
-            msg = f"🦞【戰情室 Pro 完全版｜{display_date}】\n"
-            msg += macro_msg + us_tech_msg
-            
-            msg += "\n🎯【主力獵殺區｜小股本菁英】\n========================\n"
-            msg += "🟢 洗碗秀 (適合潛伏)\n" + ("\n".join(washout_list) if washout_list else "無") + "\n"
-            msg += "🔴 主升段 (爆量點火)\n" + ("\n".join(breakout_list) if breakout_list else "無") + "\n"
-            
-            msg += "\n🥷【闇黑兵法｜極端吃屍區】\n========================\n"
-            msg += "🪤 破底翻 (假跌破真誘空)\n" + ("\n".join(fake_bd_list) if fake_bd_list else "無符合 (市場無恐慌錯殺)") + "\n"
-            msg += "🩸 終極窒息量 (主力偷偷鎖碼)\n" + ("\n".join(dry_up_list) if dry_up_list else "無符合 (市場籌碼尚在浮動)") + "\
+        api_url = "https
