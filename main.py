@@ -29,7 +29,7 @@ def send_msg(text):
         print(f"Telegram 推播失敗: {e}")
 
 # ==========================================
-# 📊 教科書級：主力買超熱度分級模組
+# 📊 輔助模組
 # ==========================================
 def get_heat_level_tag(net_buy_shares):
     lots = net_buy_shares / 1000
@@ -39,38 +39,6 @@ def get_heat_level_tag(net_buy_shares):
     elif lots >= 5000: return " ☕[Lv.1 微溫]"
     return ""
 
-# ==========================================
-# 🦅 不死鳥濾網 2.0 (嚴格對齊日期)
-# ==========================================
-def check_undying_bird(stock_id, target_date_str):
-    try:
-        df = yf.Ticker(f"{stock_id}.TW").history(period="1mo")
-        if df.empty or len(df) < 2:
-            df = yf.Ticker(f"{stock_id}.TWO").history(period="1mo")
-            
-        df = df[df['Volume'] > 0]
-        if len(df) < 2: return ""
-
-        df.index = df.index.tz_localize(None)
-        df['date_str'] = df.index.strftime('%Y%m%d')
-        
-        if target_date_str not in df['date_str'].values: return ""
-            
-        target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
-        if target_idx < 1: return "" 
-        
-        target_close = df['Close'].iloc[target_idx]
-        yesterday_close = df['Close'].iloc[target_idx - 1]
-        pct_change = ((target_close - yesterday_close) / yesterday_close) * 100
-        
-        if pct_change >= -1.5:
-            return f" 🦅[不死鳥 {pct_change:+.1f}%]"
-        return ""
-    except: return ""
-
-# ==========================================
-# 🌍 總體經濟與大盤風向
-# ==========================================
 def get_macro_score():
     score = 0
     try:
@@ -97,10 +65,34 @@ def get_us_tech():
     except: return "🇺🇸【美股風向球】夜盤數據讀取中斷\n"
     return ""
 
+def check_undying_bird(stock_id, target_date_str):
+    try:
+        df = yf.Ticker(f"{stock_id}.TW").history(period="1mo")
+        if df.empty or len(df) < 2:
+            df = yf.Ticker(f"{stock_id}.TWO").history(period="1mo")
+            
+        df = df[df['Volume'] > 0]
+        if len(df) < 2: return ""
+        df.index = df.index.tz_localize(None)
+        df['date_str'] = df.index.strftime('%Y%m%d')
+        if target_date_str not in df['date_str'].values: return ""
+            
+        target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
+        if target_idx < 1: return "" 
+        
+        target_close = df['Close'].iloc[target_idx]
+        yesterday_close = df['Close'].iloc[target_idx - 1]
+        pct_change = ((target_close - yesterday_close) / yesterday_close) * 100
+        
+        if pct_change >= -1.5:
+            return f" 🦅[不死鳥 {pct_change:+.1f}%]"
+        return ""
+    except: return ""
+
 # ==========================================
-# 🎯 雙軌獵殺掃描系統 (攻擊區)
+# 🎯 核心大腦：多重兵法統一掃描引擎
 # ==========================================
-def fetch_single_stock(args):
+def analyze_stock(args):
     stock, target_date_str = args
     stock_id = stock['id']
     try:
@@ -116,105 +108,52 @@ def fetch_single_stock(args):
             df = df.iloc[:target_idx + 1]
             
         if len(df) < 20: return None
-        return {'stock': stock, 'df': df}
-    except: return None
-
-def scan_pro_targets(candidate_stocks, target_date_str):
-    washout_mode_list, breakout_mode_list = [], []
-    scan_pool = [(stock, target_date_str) for stock in candidate_stocks[:40]]
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(fetch_single_stock, scan_pool))
-    
-    for res in results:
-        if not res: continue
-        stock_id, name, df = res['stock']['id'], res['stock']['name'], res['df']
         
-        current_price = df['Close'].iloc[-1]
-        yesterday_price = df['Close'].iloc[-2]
-        current_vol = df['Volume'].iloc[-1]
+        current = df.iloc[-1]
+        yesterday = df.iloc[-2]
         ma10 = df['Close'].tail(10).mean()
         ma20 = df['Close'].tail(20).mean()
-        
-        if not (current_price > ma20 and ma10 >= ma20): continue 
+        avg_vol_5d = df['Volume'].tail(5).mean()
         
         recent_10d = df.tail(10)
         vol_sum = recent_10d['Volume'].sum()
-        if vol_sum == 0: continue 
+        if vol_sum == 0: return None
         
         vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / vol_sum
-        avg_vol_5d = df['Volume'].tail(5).mean()
-        high_10d = recent_10d['High'].max() 
-        price_diff_pct = (current_price - vwap_10d) / vwap_10d
-
-        if current_price >= (vwap_10d * 0.98) and current_vol < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
-            washout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} (守底 {vwap_10d:.1f} | 量縮)")
-        elif current_price >= vwap_10d and current_vol > (avg_vol_5d * 1.5) and current_price > yesterday_price:
-            if current_price >= (high_10d * 0.98): 
-                breakout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} (爆量! 前高 {high_10d:.1f})")
-            
-    report = "\n🎯【龍蝦戰情室 Pro - 雙軌獵殺名單】\n===================================\n"
-    report += "🟢 洗碗秀 (量縮守底，適合潛伏)\n"
-    report += "\n".join(washout_mode_list) if washout_mode_list else "無"
-    report += "\n\n🔴 主升段 (爆量點火)\n"
-    report += "\n".join(breakout_mode_list) if breakout_mode_list else "無"
-    report += "\n===================================\n"
-    return report
-
-# ==========================================
-# 💀 高危險雷區掃描 (防禦區 - 新增絕招)
-# ==========================================
-def scan_warning_targets(all_stocks):
-    warning_msg = "\n💀【高危險雷區｜請勿接刀】\n===================================\n"
-    
-    # 絕招一：🔪 投信背刺結帳 (尋找投信狂倒貨的股票)
-    # 邏輯：從全市場抓出投信賣超最兇的前 5 名，且賣超超過 1500 張
-    it_dump_list = sorted([s for s in all_stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
-    warning_msg += "🔪 投信無情結帳 (法人跑路):\n"
-    if it_dump_list:
-        for s in it_dump_list:
-            warning_msg += f"• {s['id']} {s['name']}: 投信大賣 {abs(int(s['t_net']/1000))} 千張\n"
-    else:
-        warning_msg += "無明顯投信結帳跡象。\n"
-
-    # 絕招二：⚡ 散戶絞肉機 (避雷針掃描)
-    # 邏輯：掃描法人「賣超排行榜前 30 名」，找尋爆出大於 5日均量 1.5倍，且留長上影線的股票
-    warning_msg += "\n⚡ 散戶絞肉機 (爆天量避雷針):\n"
-    worst_stocks = sorted(all_stocks, key=lambda x: x['net'])[:30] # 抓出賣壓最重的 30 檔
-    rod_list = []
-    
-    def check_lightning_rod(stock):
-        stock_id = stock['id']
-        try:
-            df = yf.Ticker(f"{stock_id}.TW").history(period="10d")
-            if df.empty: df = yf.Ticker(f"{stock_id}.TWO").history(period="10d")
-            if len(df) < 5: return None
-            
-            current = df.iloc[-1]
-            avg_vol_5d = df['Volume'].tail(5).mean()
-            
-            # 條件：爆量 1.5倍 + 上影線大於實體K線2倍
-            if current['Volume'] > (avg_vol_5d * 1.5):
-                body_len = abs(current['Close'] - current['Open'])
-                upper_shadow = current['High'] - max(current['Close'], current['Open'])
-                lower_shadow = min(current['Close'], current['Open']) - current['Low']
-                
-                # 上影線很長，且沒有下影線支撐 (標準避雷針)
-                if upper_shadow > (body_len * 2) and upper_shadow > lower_shadow:
-                    return f"• {stock_id} {stock['name']}: 價 {current['Close']:.1f} (高點 {current['High']:.1f} 被出貨)"
-        except: return None
-        return None
-
-    # 用多執行緒光速查這 30 檔的 K 線
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        rod_results = list(executor.map(check_lightning_rod, worst_stocks))
+        high_10d = recent_10d['High'].max()
+        past_9d_low = df['Low'].iloc[-10:-1].min()
         
-    for res in rod_results:
-        if res: rod_list.append(res)
+        res = {'stock': stock, 'washout': False, 'breakout': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current}
         
-    warning_msg += "\n".join(rod_list) if rod_list else "無爆量避雷針出現。"
-    warning_msg += "\n===================================\n"
-    return warning_msg
+        # 1. 雙軌獵殺 (限定多頭趨勢)
+        if current['Close'] > ma20 and ma10 >= ma20:
+            price_diff_pct = (current['Close'] - vwap_10d) / vwap_10d
+            if current['Close'] >= (vwap_10d * 0.98) and current['Volume'] < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
+                res['washout'] = True
+            if current['Close'] >= vwap_10d and current['Volume'] > (avg_vol_5d * 1.5) and current['Close'] > yesterday['Close']:
+                if current['Close'] >= (high_10d * 0.98):
+                    res['breakout'] = True
+
+        # 2. 闇黑兵法
+        # 🪤 破底翻：跌破過去9天低點，但收盤拉紅且高於昨天收盤
+        if current['Low'] < past_9d_low and current['Close'] > yesterday['Close'] and current['Close'] > current['Open']:
+            res['fake_bd'] = True
+            
+        # 🩸 終極窒息量：在月線上，量縮至5日均量35%以下，當日振幅極小(<1.5%)
+        amplitude = (current['High'] - current['Low']) / yesterday['Close']
+        if current['Close'] > ma20 and current['Volume'] < (avg_vol_5d * 0.35) and amplitude < 0.015:
+            res['dry_up'] = True
+
+        # 3. 避雷針掃描
+        if current['Volume'] > (avg_vol_5d * 1.5):
+            body_len = abs(current['Close'] - current['Open'])
+            upper_shadow = current['High'] - max(current['Close'], current['Open'])
+            lower_shadow = min(current['Close'], current['Open']) - current['Low']
+            if upper_shadow > (body_len * 2) and upper_shadow > lower_shadow:
+                res['rod'] = True
+
+        return res
+    except: return None
 
 # ==========================================
 # 🚀 主程式啟動區
@@ -234,7 +173,7 @@ if __name__ == "__main__":
         
         stocks = []
         
-        # 🚀 官方 Open API
+        # 🚀 官方 Open API 引擎
         api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
         try:
             res = requests.get(api_url, headers=HEADERS, timeout=10)
@@ -270,24 +209,60 @@ if __name__ == "__main__":
             except Exception as backup_e:
                 print(f"備用引擎也失敗: {backup_e}")
 
-        # 最後推播組合
         if not stocks:
-            send_msg(f"❌ 兩套資料引擎皆抓取失敗，證交所可能正在停機維護。")
+            send_msg(f"❌ 兩套資料引擎皆抓取失敗，證交所可能維護中。")
         else:
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
-            # 1. 產生攻擊區報告
-            pro_msg = scan_pro_targets(stocks, d_str)
-            # 2. 產生防禦區報告 (雷區掃描)
-            warning_msg = scan_warning_targets(stocks)
+            # 🔥 擴大雷達網：取買超前 150 名 + 賣超前 50 名 (共200檔) 進行光速掃描
+            scan_pool = stocks[:150] + stocks[-50:]
+            scan_args = [(s, d_str) for s in scan_pool]
             
+            washout_list, breakout_list = [], []
+            fake_bd_list, dry_up_list = [], []
+            rod_list = []
+            
+            # 使用 20 個執行緒極速併發
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                results = list(executor.map(analyze_stock, scan_args))
+                
+            for res in results:
+                if not res: continue
+                s = res['stock']
+                price = res['current']['Close']
+                
+                # 分類歸檔
+                if res['washout']: washout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (量縮守底)")
+                if res['breakout']: breakout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (爆量點火)")
+                if res['fake_bd']: fake_bd_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (殺盤洗停損)")
+                if res['dry_up']: dry_up_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (籌碼極度鎖死)")
+                if res['rod']: rod_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
+
+            # 🔪 投信背刺名單 (全市場掃描，獨立於 K 線外)
+            it_dump_list = sorted([s for s in stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
+            
+            # ================= 組合報告 =================
             msg = f"🦞【戰情室 Pro 完全版｜{display_date}】\n"
-            msg += macro_msg + us_tech_msg + pro_msg + warning_msg
+            msg += macro_msg + us_tech_msg
             
-            msg += "\n🔥 買超 Top 10:\n"
-            for s in stocks[:10]:
-                heat_tag = get_heat_level_tag(s['net'])
-                msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}\n"
+            msg += "\n🎯【主力獵殺區】\n========================\n"
+            msg += "🟢 洗碗秀 (適合潛伏)\n" + ("\n".join(washout_list) if washout_list else "無") + "\n"
+            msg += "🔴 主升段 (爆量點火)\n" + ("\n".join(breakout_list) if breakout_list else "無") + "\n"
+            
+            msg += "\n🥷【闇黑兵法｜極端吃屍區】\n========================\n"
+            msg += "🪤 破底翻 (假跌破真誘空)\n" + ("\n".join(fake_bd_list) if fake_bd_list else "無符合 (市場無恐慌錯殺)") + "\n"
+            msg += "🩸 終極窒息量 (主力偷偷鎖碼)\n" + ("\n".join(dry_up_list) if dry_up_list else "無符合 (市場籌碼尚在浮動)") + "\n"
+            
+            msg += "\n💀【高危雷區｜請勿接刀】\n========================\n"
+            msg += "🔪 投信無情結帳:\n"
+            if it_dump_list:
+                for s in it_dump_list: msg += f"• {s['id']} {s['name']}: 賣 {abs(int(s['t_net']/1000))} 千張\n"
+            else: msg += "無\n"
+            msg += "⚡ 散戶絞肉機 (避雷針):\n" + ("\n".join(rod_list) if rod_list else "無") + "\n"
+            
+            msg += "\n🔥 買超 Top 5:\n"
+            for s in stocks[:5]:
+                msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{get_heat_level_tag(s['net'])}\n"
                 
             msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
             found_bird = False
@@ -296,17 +271,7 @@ if __name__ == "__main__":
                 if bird_tag:
                     msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
                     found_bird = True
-            if not found_bird:
-                msg += "今日無符合條件的不死鳥標的。\n"
-                
-            msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
-            count = 0
-            for s in stocks:
-                if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
-                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
-                    count += 1
-                if count >= 5: break
-            if count == 0: msg += "無土洋合買標的。\n"
+            if not found_bird: msg += "無\n"
                 
             send_msg(msg)
 
