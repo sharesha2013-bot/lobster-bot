@@ -92,15 +92,29 @@ def check_undying_bird(stock_id, target_date_str):
     except: return ""
 
 # ==========================================
-# 🎯 核心大腦：攻防分離統一掃描引擎
+# 🎯 核心大腦：股本透視與攻防分離引擎
 # ==========================================
 def analyze_stock(args):
     stock, target_date_str, rank = args
     stock_id = stock['id']
     try:
-        df = yf.Ticker(f"{stock_id}.TW").history(period="1mo")
-        if df.empty: df = yf.Ticker(f"{stock_id}.TWO").history(period="1mo")
+        ticker = yf.Ticker(f"{stock_id}.TW")
+        df = ticker.history(period="1mo")
+        if df.empty: 
+            ticker = yf.Ticker(f"{stock_id}.TWO")
+            df = ticker.history(period="1mo")
+            
         df = df[df['Volume'] > 0].dropna(subset=['Close', 'Volume'])
+        
+        # 光速抓取總股數 (用於判斷是否為大笨象)
+        shares_out = None
+        try:
+            shares_out = ticker.fast_info.shares
+        except:
+            try:
+                shares_out = ticker.info.get('sharesOutstanding')
+            except:
+                pass
         
         df.index = df.index.tz_localize(None)
         df['date_str'] = df.index.strftime('%Y%m%d')
@@ -125,9 +139,32 @@ def analyze_stock(args):
         high_10d = recent_10d['High'].max()
         past_9d_low = df['Low'].iloc[-10:-1].min()
         
-        res = {'stock': stock, 'washout': False, 'breakout': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current}
+        # 🚀 終極濾網：大牛股/指數工具人強制降級
+        net_buy_shares = abs(stock['net'])
+        is_heavy_dinosaur = False
+        cap_tag = ""
         
-        # 1. 雙軌獵殺 (🌟 僅限前 40 名菁英)
+        if shares_out and shares_out > 0:
+            capital_ratio = net_buy_shares / shares_out
+            day_turnover = current['Volume'] / shares_out
+            cap_tag = f" | 鎖碼 {capital_ratio*100:.2f}%"
+            # 條件：買超佔總股本 < 0.1% 且 當日週轉率 < 2% -> 無爆發力的大牛股
+            if capital_ratio < 0.001 and day_turnover < 0.02:
+                is_heavy_dinosaur = True
+        else:
+            vol_ratio = (net_buy_shares / current['Volume']) if current['Volume'] > 0 else 0
+            cap_tag = f" | 佔量 {vol_ratio*100:.1f}%"
+            # 無股本資料時的備用濾網：5日均量>2萬張 且 買超佔當日成交量不到5%
+            if avg_vol_5d > 20000 and vol_ratio < 0.05:
+                is_heavy_dinosaur = True
+                
+        # 若判定為大牛股，剝奪攻擊資格 (降級到雷區掃描)
+        if rank <= 40 and is_heavy_dinosaur:
+            rank = 999 
+        
+        res = {'stock': stock, 'washout': False, 'breakout': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current, 'tag': cap_tag}
+        
+        # 1. 雙軌獵殺 (🌟 僅限前 40 名且通過輕盈測試的菁英)
         if rank <= 40:
             if current['Close'] > ma20 and ma10 >= ma20:
                 price_diff_pct = (current['Close'] - vwap_10d) / vwap_10d
@@ -137,17 +174,15 @@ def analyze_stock(args):
                     if current['Close'] >= (high_10d * 0.98):
                         res['breakout'] = True
 
-        # 2. 闇黑兵法 (全域掃描，不受排名限制)
-        # 🪤 破底翻：跌破過去9天低點，但收盤拉紅且高於昨天收盤
+        # 2. 闇黑兵法 (全域掃描，不受排名與股本限制)
         if current['Low'] < past_9d_low and current['Close'] > yesterday['Close'] and current['Close'] > current['Open']:
             res['fake_bd'] = True
             
-        # 🩸 終極窒息量：在月線上，量縮至5日均量35%以下，當日振幅極小(<1.5%)
         amplitude = (current['High'] - current['Low']) / yesterday['Close']
         if current['Close'] > ma20 and current['Volume'] < (avg_vol_5d * 0.35) and amplitude < 0.015:
             res['dry_up'] = True
 
-        # 3. 避雷針掃描 (全域掃描，不受排名限制)
+        # 3. 避雷針掃描 (全域掃描)
         if current['Volume'] > (avg_vol_5d * 1.5):
             body_len = abs(current['Close'] - current['Open'])
             upper_shadow = current['High'] - max(current['Close'], current['Open'])
@@ -217,14 +252,10 @@ if __name__ == "__main__":
         else:
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
-            # 🔥 掃描池建構：攻擊與防禦階級脫鉤
+            # 🔥 掃描池建構
             scan_args = []
-            
-            # 1. 買超前 150 名 (附帶 1~150 的真實排名，前 40 名會觸發攻擊雷達)
             for i, s in enumerate(stocks[:150]):
                 scan_args.append((s, d_str, i + 1))
-                
-            # 2. 賣超最慘 50 名 (排名設為 999，專職防禦與暗黑掃描)
             for s in stocks[-50:]:
                 scan_args.append((s, d_str, 999))
             
@@ -232,7 +263,6 @@ if __name__ == "__main__":
             fake_bd_list, dry_up_list = [], []
             rod_list = []
             
-            # 使用 20 個執行緒極速併發
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
                 results = list(executor.map(analyze_stock, scan_args))
                 
@@ -240,61 +270,25 @@ if __name__ == "__main__":
                 if not res: continue
                 s = res['stock']
                 price = res['current']['Close']
+                tag = res['tag']
                 
-                # 分類歸檔
-                if res['washout']: washout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (量縮守底)")
-                if res['breakout']: breakout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (爆量點火)")
+                # 分類歸檔 (攻擊名單加上鎖碼率標籤)
+                if res['washout']: washout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (守底{tag})")
+                if res['breakout']: breakout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (點火{tag})")
                 if res['fake_bd']: fake_bd_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (殺盤洗停損)")
-                if res['dry_up']: dry_up_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (籌碼極度鎖死)")
+                if res['dry_up']: dry_up_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (極度鎖死)")
                 if res['rod']: rod_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
 
-            # 🔪 投信背刺名單 (全市場掃描，抓取投信賣超大於 1500 張)
             it_dump_list = sorted([s for s in stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
             
             # ================= 組合報告 =================
             msg = f"🦞【戰情室 Pro 完全版｜{display_date}】\n"
             msg += macro_msg + us_tech_msg
             
-            msg += "\n🎯【主力獵殺區】\n========================\n"
+            msg += "\n🎯【主力獵殺區｜小股本菁英】\n========================\n"
             msg += "🟢 洗碗秀 (適合潛伏)\n" + ("\n".join(washout_list) if washout_list else "無") + "\n"
             msg += "🔴 主升段 (爆量點火)\n" + ("\n".join(breakout_list) if breakout_list else "無") + "\n"
             
             msg += "\n🥷【闇黑兵法｜極端吃屍區】\n========================\n"
             msg += "🪤 破底翻 (假跌破真誘空)\n" + ("\n".join(fake_bd_list) if fake_bd_list else "無符合 (市場無恐慌錯殺)") + "\n"
-            msg += "🩸 終極窒息量 (主力偷偷鎖碼)\n" + ("\n".join(dry_up_list) if dry_up_list else "無符合 (市場籌碼尚在浮動)") + "\n"
-            
-            msg += "\n💀【高危雷區｜請勿接刀】\n========================\n"
-            msg += "🔪 投信無情結帳:\n"
-            if it_dump_list:
-                for s in it_dump_list: msg += f"• {s['id']} {s['name']}: 賣 {abs(int(s['t_net']/1000))} 張\n"
-            else: msg += "無\n"
-            msg += "⚡ 散戶絞肉機 (避雷針):\n" + ("\n".join(rod_list) if rod_list else "無") + "\n"
-            
-            msg += "\n🔥 買超 Top 5:\n"
-            for s in stocks[:5]:
-                msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{get_heat_level_tag(s['net'])}\n"
-                
-            msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
-            found_bird = False
-            for s in stocks[-10:][::-1]:
-                bird_tag = check_undying_bird(s['id'], d_str)
-                if bird_tag:
-                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
-                    found_bird = True
-            if not found_bird: msg += "無\n"
-            
-            # 土洋合買快篩
-            msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
-            count = 0
-            for s in stocks:
-                if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
-                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
-                    count += 1
-                if count >= 5: break
-            if count == 0: msg += "無土洋合買標的。\n"
-                
-            send_msg(msg)
-
-    except Exception as e:
-        error_detail = traceback.format_exc()
-        send_msg(f"⚠️ 龍蝦系統核心崩潰！\n{str(e)}\n{error_detail[:300]}")
+            msg += "🩸 終極窒息量 (主力偷偷鎖碼)\n" + ("\n".join(dry_up_list) if dry_up_list else "無符合 (市場籌碼尚在浮動)") + "\
