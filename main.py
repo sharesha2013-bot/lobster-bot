@@ -166,86 +166,83 @@ def scan_pro_targets(candidate_stocks, target_date_str):
     return report
 
 # ==========================================
-# 🚀 主程式啟動區
+# 🚀 主程式啟動區 (全新 API 引擎)
 # ==========================================
 if __name__ == "__main__":
     try:
-        tw_now = datetime.utcnow() + timedelta(hours=8)
-        
+        # 1. 取得大盤與美股狀態
         score = get_macro_score()
         macro_msg = f"🚨【風險：{score}分】風暴來襲！\n" if score >= 75 else (f"⚠️【風險：{score}分】建議觀望。\n" if score >= 50 else f"🟢【風險：{score}分】市場安全。\n")
         us_tech_msg = get_us_tech()
         
-        target_date = tw_now
-        data_found = False
+        # 2. 自動抓取「真實的最新交易日」，避免遇到假日當機
+        twii = yf.Ticker("^TWII").history(period="5d")
+        latest_date = twii.index[-1]
+        d_str = latest_date.strftime('%Y%m%d')
+        display_date = latest_date.strftime('%Y-%m-%d')
         
-        for _ in range(7):
-            d_str = target_date.strftime('%Y%m%d')
-            url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
+        # 3. 呼叫證交所官方 Open API 專線 (瞬間抓取最新三大法人買賣超)
+        api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
+        res = requests.get(api_url, timeout=10)
+        
+        if res.status_code == 200:
+            data = res.json()
+            stocks = []
             
-            try:
-                time.sleep(2) 
-                res = requests.get(url, headers=HEADERS, timeout=10)
-                if res.status_code != 200:
-                    target_date -= timedelta(days=1)
+            for row in data:
+                try:
+                    stock_id = row.get('Code', '').strip()
+                    name = row.get('Name', '').strip()
+                    
+                    if not stock_id or stock_id.startswith('00'): 
+                        continue 
+                        
+                    # 直接從 JSON 抓取數據，不用再算陣列位置
+                    f_net = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', ''))
+                    t_net = int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
+                    net = int(str(row.get('Difference', '0')).replace(',', ''))
+                    
+                    stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net})
+                except:
                     continue
-                res_json = res.json()
-            except:
-                target_date -= timedelta(days=1)
-                continue
             
-            if res_json.get('stat') == 'OK':
-                data = res_json['data']
-                stocks = []
-                for row in data:
-                    if len(row) > 18:
-                        try:
-                            stock_id = row[0].strip()
-                            name = row[1].strip()
-                            if stock_id.startswith('00'): continue 
-                            f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
-                            t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
-                            stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': f_net + t_net})
-                        except: continue
-                
-                stocks.sort(key=lambda x: x['net'], reverse=True)
-                
-                pro_msg = scan_pro_targets(stocks, d_str)
-                
-                msg = f"🦞【戰情室 Pro 完全版｜{target_date.strftime('%Y-%m-%d')}】\n"
-                msg += macro_msg + us_tech_msg + pro_msg 
-                
-                msg += "\n🔥 買超 Top 10:\n"
-                for s in stocks[:10]:
-                    heat_tag = get_heat_level_tag(s['net'])
-                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}\n"
-                    
-                msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
-                found_bird = False
-                for s in stocks[-10:][::-1]:
-                    bird_tag = check_undying_bird(s['id'], d_str)
-                    if bird_tag:
-                        msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
-                        found_bird = True
-                if not found_bird:
-                    msg += "今日無符合條件的不死鳥標的。\n"
-                    
-                msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
-                count = 0
-                for s in stocks:
-                    if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
-                        msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
-                        count += 1
-                    if count >= 5: break
-                if count == 0: msg += "無土洋合買標的。\n"
-                    
-                send_msg(msg)
-                data_found = True
-                break
-                
-            target_date -= timedelta(days=1)
+            # 排序：依照總買賣超張數排序
+            stocks.sort(key=lambda x: x['net'], reverse=True)
             
-        if not data_found: send_msg("❌ 查詢天數內皆無證交所資料，IP 可能遭阻擋。")
+            # 4. 啟動獵殺雷達
+            pro_msg = scan_pro_targets(stocks, d_str)
+            
+            # 5. 組合戰情報告
+            msg = f"🦞【戰情室 Pro 完全版｜{display_date}】\n"
+            msg += macro_msg + us_tech_msg + pro_msg 
+            
+            msg += "\n🔥 買超 Top 10:\n"
+            for s in stocks[:10]:
+                heat_tag = get_heat_level_tag(s['net'])
+                msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}\n"
+                
+            msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
+            found_bird = False
+            for s in stocks[-10:][::-1]:
+                bird_tag = check_undying_bird(s['id'], d_str)
+                if bird_tag:
+                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
+                    found_bird = True
+            if not found_bird:
+                msg += "今日無符合條件的不死鳥標的。\n"
+                
+            msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
+            count = 0
+            for s in stocks:
+                if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
+                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
+                    count += 1
+                if count >= 5: break
+            if count == 0: msg += "無土洋合買標的。\n"
+                
+            send_msg(msg)
+        else:
+            send_msg(f"❌ API 連線異常，狀態碼: {res.status_code}")
 
     except Exception as e:
         error_detail = traceback.format_exc()
