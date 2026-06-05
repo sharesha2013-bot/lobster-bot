@@ -8,10 +8,20 @@ import yfinance as yf
 import pandas as pd
 
 # ==========================================
-# ⚙️ 系統設定區
+# ⚙️ 系統設定區 & 游擊隊族群字典
 # ==========================================
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
+
+# 游擊隊專屬族群字典 (可自行擴充)
+SECTOR_MAP = {
+    '3324': '散熱', '3017': '散熱', '2421': '散熱',
+    '1504': '重電', '1513': '重電', '1519': '重電',
+    '2368': 'AI伺服器', '3231': 'AI伺服器', '2382': 'AI伺服器',
+    '2330': '晶圓代工', '6770': '晶圓代工', '2303': '晶圓代工',
+    '2342': '封測', '3049': '面板', '3481': '面板',
+    '2371': '綠能', '6901': '創投'
+}
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -29,7 +39,7 @@ def send_msg(text):
         print(f"Telegram 推播失敗: {e}")
 
 # ==========================================
-# 📊 輔助模組
+# 📊 輔助模組 (宏觀天氣與美股)
 # ==========================================
 def get_heat_level_tag(net_buy_shares):
     lots = net_buy_shares / 1000
@@ -41,18 +51,41 @@ def get_heat_level_tag(net_buy_shares):
 
 def get_macro_score():
     score = 0
+    reasons = []
     try:
-        vix = yf.Ticker("^VIX").history(period="2d")
-        if len(vix) >= 2:
-            vix_pct = ((vix['Close'].iloc[-1] - vix['Close'].iloc[-2]) / vix['Close'].iloc[-2]) * 100
-            if vix['Close'].iloc[-1] > 20 or vix_pct > 5: score += 25
-        
-        usd = yf.Ticker("DX-Y.NYB").history(period="2d")
-        if len(usd) >= 2:
-            usd_pct = ((usd['Close'].iloc[-1] - usd['Close'].iloc[-2]) / usd['Close'].iloc[-2]) * 100
-            if usd_pct > 0.3: score += 25
+        # 1. 台幣匯率 (偵測外資提款)
+        twd = yf.Ticker("TWD=X").history(period="5d")
+        if len(twd) >= 2:
+            twd_pct = ((twd['Close'].iloc[-1] - twd['Close'].iloc[-2]) / twd['Close'].iloc[-2]) * 100
+            if twd_pct > 0.2:
+                score += 35
+                reasons.append("💸外資提款(台幣急貶)")
+            elif twd['Close'].iloc[-1] > 32.5: 
+                score += 15
+                reasons.append("⚠️台幣弱勢")
+
+        # 2. 櫃買指數 (偵測中小型股人踩人)
+        otc = yf.Ticker("^TWO").history(period="1mo")
+        if len(otc) >= 2:
+            otc_pct = ((otc['Close'].iloc[-1] - otc['Close'].iloc[-2]) / otc['Close'].iloc[-2]) * 100
+            otc_ma10 = otc['Close'].tail(10).mean()
+            if otc_pct < -1.5:
+                score += 45
+                reasons.append("🩸中小型股血崩(櫃買大跌)")
+            elif otc['Close'].iloc[-1] < otc_ma10:
+                score += 20
+                reasons.append("📉櫃買破10日線")
+
+        # 3. 加權指數 (大盤趨勢防禦)
+        twii = yf.Ticker("^TWII").history(period="1mo")
+        if len(twii) >= 2:
+            twii_ma20 = twii['Close'].tail(20).mean()
+            if twii['Close'].iloc[-1] < twii_ma20:
+                score += 20
+                reasons.append("💀大盤跌破月線")
+                
     except: pass 
-    return score
+    return score, reasons
 
 def get_us_tech():
     try:
@@ -126,48 +159,56 @@ def analyze_stock(args):
         
         current = df.iloc[-1]
         yesterday = df.iloc[-2]
+        
+        # 🧟‍♂️ 殭屍股濾網：單日總成交量小於 500 張 (50萬股) 直接無情剔除
+        if current['Volume'] < 500000:
+            return None
+        
+        ma5 = df['Close'].tail(5).mean()
         ma10 = df['Close'].tail(10).mean()
         ma20 = df['Close'].tail(20).mean()
         avg_vol_5d = df['Volume'].tail(5).mean()
         
-        recent_10d = df.tail(10)
-        vol_sum = recent_10d['Volume'].sum()
-        if vol_sum == 0: return None
-        
-        vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / vol_sum
-        high_10d = recent_10d['High'].max()
-        past_9d_low = df['Low'].iloc[-10:-1].min()
-        
         net_buy_shares = abs(stock['net'])
-        is_heavy_dinosaur = False
-        cap_tag = ""
-        
+        capital_ratio = 0
         if shares_out and shares_out > 0:
             capital_ratio = net_buy_shares / shares_out
-            day_turnover = current['Volume'] / shares_out
-            cap_tag = f" | 鎖碼 {capital_ratio*100:.2f}%"
-            if capital_ratio < 0.001 and day_turnover < 0.02:
-                is_heavy_dinosaur = True
-        else:
-            vol_ratio = (net_buy_shares / current['Volume']) if current['Volume'] > 0 else 0
-            cap_tag = f" | 佔量 {vol_ratio*100:.1f}%"
-            if avg_vol_5d > 20000 and vol_ratio < 0.05:
-                is_heavy_dinosaur = True
-                
-        if rank <= 40 and is_heavy_dinosaur:
-            rank = 999 
-        
-        res = {'stock': stock, 'washout': False, 'breakout': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current, 'tag': cap_tag}
-        
-        if rank <= 40:
-            if current['Close'] > ma20 and ma10 >= ma20:
-                price_diff_pct = (current['Close'] - vwap_10d) / vwap_10d
-                if current['Close'] >= (vwap_10d * 0.98) and current['Volume'] < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
-                    res['washout'] = True
-                if current['Close'] >= vwap_10d and current['Volume'] > (avg_vol_5d * 1.5) and current['Close'] > yesterday['Close']:
-                    if current['Close'] >= (high_10d * 0.98):
-                        res['breakout'] = True
 
+        sector_tag = f"[{SECTOR_MAP.get(stock_id, '個股')}]"
+        
+        res = {'stock': stock, 'washout': False, 'breakout': False, 'breakout_tier': '', 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current, 'tag': '', 'sector': sector_tag}
+        
+        # 共同特徵計算 (避雷針)
+        body_len = abs(current['Close'] - current['Open'])
+        upper_shadow = current['High'] - max(current['Close'], current['Open'])
+        lower_shadow = min(current['Close'], current['Open']) - current['Low']
+        has_rod = (upper_shadow > (body_len * 2)) and (upper_shadow > lower_shadow)
+        vol_ratio_yest = current['Volume'] / yesterday['Volume'] if yesterday['Volume'] > 0 else 0
+
+        if rank <= 40:
+            # 🧼 洗碗區：鎖碼率 > 0.1%，且收盤價距離 5MA 成本線介於 -1% 到 +3% 之間
+            price_diff_ma5 = (current['Close'] - ma5) / ma5
+            if capital_ratio >= 0.001 and (-0.01 <= price_diff_ma5 <= 0.03):
+                res['washout'] = True
+                res['tag'] = f"鎖碼 {capital_ratio*100:.2f}% | 乖離 {price_diff_ma5*100:.1f}%"
+
+            # 🚀 主升段：鎖碼率 > 0.5%，股價收紅，並依爆量與型態分級
+            if capital_ratio >= 0.005 and current['Close'] > yesterday['Close']:
+                if vol_ratio_yest >= 5.0 or has_rod:
+                    res['breakout'] = True
+                    res['breakout_tier'] = "💀[Lv.3 高危險]"
+                    res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 避雷針"
+                elif 2.0 <= vol_ratio_yest < 5.0 and not has_rod:
+                    res['breakout'] = True
+                    res['breakout_tier'] = "🔥[Lv.2 大噴發]"
+                    res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}%"
+                elif 1.2 <= vol_ratio_yest < 2.0 and not has_rod:
+                    res['breakout'] = True
+                    res['breakout_tier'] = "🟢[Lv.1 剛點火]"
+                    res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}%"
+
+        # 🪤 極端吃屍區邏輯
+        past_9d_low = df['Low'].iloc[-10:-1].min()
         if current['Low'] < past_9d_low and current['Close'] > yesterday['Close'] and current['Close'] > current['Open']:
             res['fake_bd'] = True
             
@@ -175,12 +216,8 @@ def analyze_stock(args):
         if current['Close'] > ma20 and current['Volume'] < (avg_vol_5d * 0.35) and amplitude < 0.015:
             res['dry_up'] = True
 
-        if current['Volume'] > (avg_vol_5d * 1.5):
-            body_len = abs(current['Close'] - current['Open'])
-            upper_shadow = current['High'] - max(current['Close'], current['Open'])
-            lower_shadow = min(current['Close'], current['Open']) - current['Low']
-            if upper_shadow > (body_len * 2) and upper_shadow > lower_shadow:
-                res['rod'] = True
+        if current['Volume'] > (avg_vol_5d * 1.5) and has_rod:
+            res['rod'] = True
 
         return res
     except: return None
@@ -192,8 +229,17 @@ if __name__ == "__main__":
     try:
         tw_now = datetime.utcnow() + timedelta(hours=8)
         
-        score = get_macro_score()
-        macro_msg = f"🚨【風險：{score}分】風暴來襲！\n" if score >= 75 else (f"⚠️【風險：{score}分】建議觀望。\n" if score >= 50 else f"🟢【風險：{score}分】市場安全。\n")
+        # 🚨 台股專屬風暴預警
+        score, macro_reasons = get_macro_score()
+        reason_str = f" [{', '.join(macro_reasons)}]" if macro_reasons else " [市場籌碼安定]"
+        
+        if score >= 75:
+            macro_msg = f"🚨【風險：{score}分】風暴來襲！請空手！{reason_str}\n"
+        elif score >= 50:
+            macro_msg = f"⚠️【風險：{score}分】警報亮起，縮小部位。{reason_str}\n"
+        else:
+            macro_msg = f"🟢【風險：{score}分】環境安全，適合游擊。{reason_str}\n"
+            
         us_tech_msg = get_us_tech()
         
         twii = yf.Ticker("^TWII").history(period="5d")
@@ -260,26 +306,27 @@ if __name__ == "__main__":
                 s = res['stock']
                 price = res['current']['Close']
                 tag = res['tag']
+                sector = res['sector']
                 
-                if res['washout']: washout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (守底{tag})")
-                if res['breakout']: breakout_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (點火{tag})")
-                if res['fake_bd']: fake_bd_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (殺盤洗停損)")
-                if res['dry_up']: dry_up_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (極度鎖死)")
-                if res['rod']: rod_list.append(f"• {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
+                if res['washout']: washout_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} ({tag})")
+                if res['breakout']: breakout_list.append(f"• {res['breakout_tier']} {sector} {s['id']} {s['name']}: 價 {price:.1f} ({tag})")
+                if res['fake_bd']: fake_bd_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (殺盤洗停損)")
+                if res['dry_up']: dry_up_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (極度鎖死)")
+                if res['rod']: rod_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
 
             it_dump_list = sorted([s for s in stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
             
             # ================= 組合報告 =================
-            msg = f"🦞【戰情室 Pro 完全版｜{display_date}】\n"
+            msg = f"🦞【戰情室 Pro 終極版｜{display_date}】\n"
             msg += macro_msg + us_tech_msg
             
             msg += "\n🎯【主力獵殺區｜小股本菁英】\n========================\n"
             
             washout_str = "\n".join(washout_list) if washout_list else "無"
-            msg += f"🟢 洗碗秀 (適合潛伏)\n{washout_str}\n"
+            msg += f"🟢 洗碗秀 (大戶護盤伏擊)\n{washout_str}\n"
             
             breakout_str = "\n".join(breakout_list) if breakout_list else "無"
-            msg += f"🔴 主升段 (爆量點火)\n{breakout_str}\n"
+            msg += f"🔴 主升段 (爆量衝鋒點火)\n{breakout_str}\n"
             
             msg += "\n🥷【闇黑兵法｜極端吃屍區】\n========================\n"
             
@@ -300,7 +347,7 @@ if __name__ == "__main__":
             rod_str = "\n".join(rod_list) if rod_list else "無"
             msg += f"⚡ 散戶絞肉機 (避雷針):\n{rod_str}\n"
             
-            msg += "\n🔥 買超 Top 5:\n"
+            msg += "\n🔥 買超 Top 5 (大戶動向):\n"
             for s in stocks[:5]:
                 msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{get_heat_level_tag(s['net'])}\n"
                 
