@@ -52,39 +52,53 @@ def get_heat_level_tag(net_buy_shares):
 def get_macro_score():
     score = 0
     reasons = []
+    
+    # 1. 匯率神經 (分開獨立 try-except，一斷線馬上報錯)
     try:
-        # 1. 台幣匯率 (偵測外資提款)
         twd = yf.Ticker("TWD=X").history(period="5d")
         if len(twd) >= 2:
             twd_pct = ((twd['Close'].iloc[-1] - twd['Close'].iloc[-2]) / twd['Close'].iloc[-2]) * 100
             if twd_pct > 0.2:
                 score += 35
-                reasons.append("💸外資提款(台幣急貶)")
+                reasons.append(f"💸台幣急貶(+{twd_pct:.2f}%)")
             elif twd['Close'].iloc[-1] > 32.5: 
                 score += 15
                 reasons.append("⚠️台幣弱勢")
+    except:
+        reasons.append("⚠️匯率雷達斷線")
 
-        # 2. 櫃買指數 (偵測中小型股人踩人)
+    # 2. 櫃買神經 (中小型股痛覺)
+    try:
         otc = yf.Ticker("^TWO").history(period="1mo")
         if len(otc) >= 2:
             otc_pct = ((otc['Close'].iloc[-1] - otc['Close'].iloc[-2]) / otc['Close'].iloc[-2]) * 100
             otc_ma10 = otc['Close'].tail(10).mean()
-            if otc_pct < -1.5:
+            if otc_pct < -1.0: 
                 score += 45
-                reasons.append("🩸中小型股血崩(櫃買大跌)")
+                reasons.append(f"🩸櫃買下殺({otc_pct:.2f}%)")
             elif otc['Close'].iloc[-1] < otc_ma10:
                 score += 20
                 reasons.append("📉櫃買破10日線")
+    except:
+        score += 20
+        reasons.append("⚠️櫃買雷達斷線")
 
-        # 3. 加權指數 (大盤趨勢防禦)
+    # 3. 加權神經 (大盤防禦)
+    try:
         twii = yf.Ticker("^TWII").history(period="1mo")
         if len(twii) >= 2:
+            twii_pct = ((twii['Close'].iloc[-1] - twii['Close'].iloc[-2]) / twii['Close'].iloc[-2]) * 100
             twii_ma20 = twii['Close'].tail(20).mean()
-            if twii['Close'].iloc[-1] < twii_ma20:
+            if twii_pct < -1.0:
+                score += 30
+                reasons.append(f"💀大盤下殺({twii_pct:.2f}%)")
+            elif twii['Close'].iloc[-1] < twii_ma20:
                 score += 20
-                reasons.append("💀大盤跌破月線")
-                
-    except: pass 
+                reasons.append("📉大盤破月線")
+    except:
+        score += 20
+        reasons.append("⚠️加權雷達斷線")
+        
     return score, reasons
 
 def get_us_tech():
@@ -249,6 +263,7 @@ if __name__ == "__main__":
         
         stocks = []
         
+        # --- 1. 抓取上市 (TWSE) 資料 ---
         api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
         try:
             res = requests.get(api_url, headers=HEADERS, timeout=10)
@@ -263,7 +278,7 @@ if __name__ == "__main__":
                     net = int(str(row.get('Difference', '0')).replace(',', ''))
                     stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net})
         except Exception as e:
-            print(f"Open API 遇到干擾: {e}")
+            print(f"上市 Open API 遇到干擾: {e}")
             
         if not stocks:
             url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
@@ -281,10 +296,40 @@ if __name__ == "__main__":
                                 t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
                                 stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': f_net + t_net})
             except Exception as backup_e:
-                print(f"備用引擎也失敗: {backup_e}")
+                print(f"上市備用引擎也失敗: {backup_e}")
 
+        # --- 2. 抓取上櫃 (TPEx) 資料 ---
+        try:
+            tw_year = latest_date.year - 1911
+            otc_date = f"{tw_year}/{latest_date.strftime('%m/%d')}"
+            otc_url = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}"
+            
+            res_otc = requests.get(otc_url, headers=HEADERS, timeout=10)
+            if res_otc.status_code == 200:
+                data_otc = res_otc.json()
+                if 'aaData' in data_otc:
+                    for row in data_otc['aaData']:
+                        stock_id = row[0].strip()
+                        name = row[1].strip()
+                        if not stock_id.isdigit() or len(stock_id) != 4: continue 
+                        
+                        f_net_otc = int(row[8].replace(',', ''))
+                        t_net_otc = int(row[11].replace(',', ''))
+                        net_otc = f_net_otc + t_net_otc
+                        
+                        stocks.append({
+                            'id': stock_id, 
+                            'name': name, 
+                            'f_net': f_net_otc, 
+                            't_net': t_net_otc, 
+                            'net': net_otc
+                        })
+        except Exception as e:
+            print(f"櫃買中心 API 遇到干擾: {e}")
+
+        # --- 3. 合併排序與執行 ---
         if not stocks:
-            send_msg(f"❌ 兩套資料引擎皆抓取失敗，證交所可能維護中。")
+            send_msg(f"❌ 所有資料引擎皆抓取失敗，交易所可能維護中。")
         else:
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
