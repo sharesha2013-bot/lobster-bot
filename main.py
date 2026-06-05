@@ -13,7 +13,6 @@ import pandas as pd
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
 
-# 游擊隊專屬族群字典 (可自行擴充)
 SECTOR_MAP = {
     '3324': '散熱', '3017': '散熱', '2421': '散熱',
     '1504': '重電', '1513': '重電', '1519': '重電',
@@ -53,7 +52,6 @@ def get_macro_score():
     score = 0
     reasons = []
     
-    # 1. 匯率神經 (分開獨立 try-except，一斷線馬上報錯)
     try:
         twd = yf.Ticker("TWD=X").history(period="5d")
         if len(twd) >= 2:
@@ -64,10 +62,8 @@ def get_macro_score():
             elif twd['Close'].iloc[-1] > 32.5: 
                 score += 15
                 reasons.append("⚠️台幣弱勢")
-    except:
-        reasons.append("⚠️匯率雷達斷線")
+    except: reasons.append("⚠️匯率雷達斷線")
 
-    # 2. 櫃買神經 (中小型股痛覺)
     try:
         otc = yf.Ticker("^TWO").history(period="1mo")
         if len(otc) >= 2:
@@ -83,7 +79,6 @@ def get_macro_score():
         score += 20
         reasons.append("⚠️櫃買雷達斷線")
 
-    # 3. 加權神經 (大盤防禦)
     try:
         twii = yf.Ticker("^TWII").history(period="1mo")
         if len(twii) >= 2:
@@ -139,10 +134,10 @@ def check_undying_bird(stock_id, target_date_str):
     except: return ""
 
 # ==========================================
-# 🎯 核心大腦：股本透視與攻防分離引擎
+# 🎯 核心大腦：加入大盤動態防禦的主升段邏輯
 # ==========================================
 def analyze_stock(args):
-    stock, target_date_str, rank = args
+    stock, target_date_str, rank, macro_score = args
     stock_id = stock['id']
     try:
         ticker = yf.Ticker(f"{stock_id}.TW")
@@ -159,8 +154,7 @@ def analyze_stock(args):
         except:
             try:
                 shares_out = ticker.info.get('sharesOutstanding')
-            except:
-                pass
+            except: pass
         
         df.index = df.index.tz_localize(None)
         df['date_str'] = df.index.strftime('%Y%m%d')
@@ -174,7 +168,7 @@ def analyze_stock(args):
         current = df.iloc[-1]
         yesterday = df.iloc[-2]
         
-        # 🧟‍♂️ 殭屍股濾網：單日總成交量小於 500 張 (50萬股) 直接無情剔除
+        # 🧟‍♂️ 殭屍股濾網
         if current['Volume'] < 500000:
             return None
         
@@ -183,45 +177,55 @@ def analyze_stock(args):
         ma20 = df['Close'].tail(20).mean()
         avg_vol_5d = df['Volume'].tail(5).mean()
         
-        net_buy_shares = abs(stock['net'])
+        # 【修正】必須是真實淨買超，拒絕大跌被當成集中度
+        net_buy_shares = stock['net']
         capital_ratio = 0
-        if shares_out and shares_out > 0:
+        if shares_out and shares_out > 0 and net_buy_shares > 0:
             capital_ratio = net_buy_shares / shares_out
 
         sector_tag = f"[{SECTOR_MAP.get(stock_id, '個股')}]"
-        
         res = {'stock': stock, 'washout': False, 'breakout': False, 'breakout_tier': '', 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current, 'tag': '', 'sector': sector_tag}
         
-        # 共同特徵計算 (避雷針)
         body_len = abs(current['Close'] - current['Open'])
         upper_shadow = current['High'] - max(current['Close'], current['Open'])
         lower_shadow = min(current['Close'], current['Open']) - current['Low']
         has_rod = (upper_shadow > (body_len * 2)) and (upper_shadow > lower_shadow)
         vol_ratio_yest = current['Volume'] / yesterday['Volume'] if yesterday['Volume'] > 0 else 0
+        
+        # 確認是否為多頭排列
+        is_uptrend = current['Close'] > ma10 and current['Close'] > ma20
 
         if rank <= 40:
-            # 🧼 洗碗區：鎖碼率 > 0.1%，且收盤價距離 5MA 成本線介於 -1% 到 +3% 之間
+            # 🧼 洗碗區：必須是真實淨買盤
             price_diff_ma5 = (current['Close'] - ma5) / ma5
-            if capital_ratio >= 0.001 and (-0.01 <= price_diff_ma5 <= 0.03):
+            if net_buy_shares > 0 and capital_ratio >= 0.001 and (-0.01 <= price_diff_ma5 <= 0.03):
                 res['washout'] = True
                 res['tag'] = f"鎖碼 {capital_ratio*100:.2f}% | 乖離 {price_diff_ma5*100:.1f}%"
 
-            # 🚀 主升段：鎖碼率 > 0.5%，股價收紅，並依爆量與型態分級
-            if capital_ratio >= 0.005 and current['Close'] > yesterday['Close']:
-                if vol_ratio_yest >= 5.0 or has_rod:
-                    res['breakout'] = True
-                    res['breakout_tier'] = "💀[Lv.3 高危險]"
-                    res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 避雷針"
-                elif 2.0 <= vol_ratio_yest < 5.0 and not has_rod:
-                    res['breakout'] = True
-                    res['breakout_tier'] = "🔥[Lv.2 大噴發]"
-                    res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}%"
-                elif 1.2 <= vol_ratio_yest < 2.0 and not has_rod:
-                    res['breakout'] = True
-                    res['breakout_tier'] = "🟢[Lv.1 剛點火]"
-                    res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}%"
+            # 🚀 【Pro級升級】主升段動態過濾
+            if net_buy_shares > 0 and current['Close'] > yesterday['Close'] and is_uptrend:
+                
+                # 環境惡劣時，提高鎖碼門檻至 0.8%
+                required_ratio = 0.008 if macro_score >= 50 else 0.005
+                
+                # 拒絕隔日沖：大空頭時，必須有實質的外資或投信買盤支撐
+                real_inst_backing = (stock['f_net'] > 0 or stock['t_net'] > 0) if macro_score >= 50 else True
 
-        # 🪤 極端吃屍區邏輯
+                if capital_ratio >= required_ratio and real_inst_backing:
+                    if has_rod:
+                        res['breakout'] = True
+                        res['breakout_tier'] = "💀[假突破/避雷針]"
+                        res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 留心隔日沖"
+                    elif vol_ratio_yest >= 2.0:
+                        res['breakout'] = True
+                        res['breakout_tier'] = "🔥[Lv.2 實體大噴發]"
+                        res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}%"
+                    elif 1.2 <= vol_ratio_yest < 2.0:
+                        res['breakout'] = True
+                        res['breakout_tier'] = "🟢[Lv.1 溫和點火]"
+                        res['tag'] = f"量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}%"
+
+        # 🪤 極端吃屍與避雷針區
         past_9d_low = df['Low'].iloc[-10:-1].min()
         if current['Low'] < past_9d_low and current['Close'] > yesterday['Close'] and current['Close'] > current['Open']:
             res['fake_bd'] = True
@@ -243,7 +247,7 @@ if __name__ == "__main__":
     try:
         tw_now = datetime.utcnow() + timedelta(hours=8)
         
-        # 🚨 台股專屬風暴預警
+        # 🚨 計算宏觀風險分數
         score, macro_reasons = get_macro_score()
         reason_str = f" [{', '.join(macro_reasons)}]" if macro_reasons else " [市場籌碼安定]"
         
@@ -263,7 +267,7 @@ if __name__ == "__main__":
         
         stocks = []
         
-        # --- 1. 抓取上市 (TWSE) 資料 ---
+        # --- 1. 抓取上市 ---
         api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
         try:
             res = requests.get(api_url, headers=HEADERS, timeout=10)
@@ -277,8 +281,7 @@ if __name__ == "__main__":
                     t_net = int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
                     net = int(str(row.get('Difference', '0')).replace(',', ''))
                     stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net})
-        except Exception as e:
-            print(f"上市 Open API 遇到干擾: {e}")
+        except: pass
             
         if not stocks:
             url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
@@ -295,15 +298,13 @@ if __name__ == "__main__":
                                 f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
                                 t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
                                 stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': f_net + t_net})
-            except Exception as backup_e:
-                print(f"上市備用引擎也失敗: {backup_e}")
+            except: pass
 
-        # --- 2. 抓取上櫃 (TPEx) 資料 ---
+        # --- 2. 抓取上櫃 ---
         try:
             tw_year = latest_date.year - 1911
             otc_date = f"{tw_year}/{latest_date.strftime('%m/%d')}"
             otc_url = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}"
-            
             res_otc = requests.get(otc_url, headers=HEADERS, timeout=10)
             if res_otc.status_code == 200:
                 data_otc = res_otc.json()
@@ -312,20 +313,10 @@ if __name__ == "__main__":
                         stock_id = row[0].strip()
                         name = row[1].strip()
                         if not stock_id.isdigit() or len(stock_id) != 4: continue 
-                        
                         f_net_otc = int(row[8].replace(',', ''))
                         t_net_otc = int(row[11].replace(',', ''))
-                        net_otc = f_net_otc + t_net_otc
-                        
-                        stocks.append({
-                            'id': stock_id, 
-                            'name': name, 
-                            'f_net': f_net_otc, 
-                            't_net': t_net_otc, 
-                            'net': net_otc
-                        })
-        except Exception as e:
-            print(f"櫃買中心 API 遇到干擾: {e}")
+                        stocks.append({'id': stock_id, 'name': name, 'f_net': f_net_otc, 't_net': t_net_otc, 'net': f_net_otc + t_net_otc})
+        except: pass
 
         # --- 3. 合併排序與執行 ---
         if not stocks:
@@ -333,15 +324,15 @@ if __name__ == "__main__":
         else:
             stocks.sort(key=lambda x: x['net'], reverse=True)
             
+            # 【重要】將 score 傳遞給判定引擎
             scan_args = []
             for i, s in enumerate(stocks[:150]):
-                scan_args.append((s, d_str, i + 1))
+                scan_args.append((s, d_str, i + 1, score))
             for s in stocks[-50:]:
-                scan_args.append((s, d_str, 999))
+                scan_args.append((s, d_str, 999, score))
             
             washout_list, breakout_list = [], []
-            fake_bd_list, dry_up_list = [], []
-            rod_list = []
+            fake_bd_list, dry_up_list, rod_list = [], [], []
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
                 results = list(executor.map(analyze_stock, scan_args))
@@ -370,15 +361,15 @@ if __name__ == "__main__":
             washout_str = "\n".join(washout_list) if washout_list else "無"
             msg += f"🟢 洗碗秀 (大戶護盤伏擊)\n{washout_str}\n"
             
-            breakout_str = "\n".join(breakout_list) if breakout_list else "無"
+            breakout_str = "\n".join(breakout_list) if breakout_list else "無符合標準"
             msg += f"🔴 主升段 (爆量衝鋒點火)\n{breakout_str}\n"
             
             msg += "\n🥷【闇黑兵法｜極端吃屍區】\n========================\n"
             
-            fake_bd_str = "\n".join(fake_bd_list) if fake_bd_list else "無符合 (市場無恐慌錯殺)"
+            fake_bd_str = "\n".join(fake_bd_list) if fake_bd_list else "無符合"
             msg += f"🪤 破底翻 (假跌破真誘空)\n{fake_bd_str}\n"
             
-            dry_up_str = "\n".join(dry_up_list) if dry_up_list else "無符合 (市場籌碼尚在浮動)"
+            dry_up_str = "\n".join(dry_up_list) if dry_up_list else "無符合"
             msg += f"🩸 終極窒息量 (主力偷偷鎖碼)\n{dry_up_str}\n"
             
             msg += "\n💀【高危雷區｜請勿接刀】\n========================\n"
@@ -386,8 +377,7 @@ if __name__ == "__main__":
             if it_dump_list:
                 for s in it_dump_list:
                     msg += f"• {s['id']} {s['name']}: 賣 {abs(int(s['t_net']/1000))} 張\n"
-            else:
-                msg += "無\n"
+            else: msg += "無\n"
                 
             rod_str = "\n".join(rod_list) if rod_list else "無"
             msg += f"⚡ 散戶絞肉機 (避雷針):\n{rod_str}\n"
@@ -403,8 +393,7 @@ if __name__ == "__main__":
                 if bird_tag:
                     msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
                     found_bird = True
-            if not found_bird:
-                msg += "無\n"
+            if not found_bird: msg += "無\n"
             
             msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
             count = 0
@@ -413,8 +402,7 @@ if __name__ == "__main__":
                     msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
                     count += 1
                 if count >= 5: break
-            if count == 0:
-                msg += "無土洋合買標的。\n"
+            if count == 0: msg += "無土洋合買標的。\n"
                 
             send_msg(msg)
 
