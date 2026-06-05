@@ -1,5 +1,4 @@
 import os
-import time
 import requests
 import traceback
 import concurrent.futures
@@ -13,6 +12,7 @@ import pandas as pd
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
 
+# 游擊隊專屬族群字典
 SECTOR_MAP = {
     '3324': '散熱', '3017': '散熱', '2421': '散熱',
     '1504': '重電', '1513': '重電', '1519': '重電',
@@ -134,7 +134,7 @@ def check_undying_bird(stock_id, target_date_str):
     except: return ""
 
 # ==========================================
-# 🎯 核心大腦：加入大盤動態防禦的主升段邏輯
+# 🎯 核心大腦：股本透視與攻防分離引擎
 # ==========================================
 def analyze_stock(args):
     stock, target_date_str, rank, macro_score = args
@@ -177,7 +177,7 @@ def analyze_stock(args):
         ma20 = df['Close'].tail(20).mean()
         avg_vol_5d = df['Volume'].tail(5).mean()
         
-        # 【修正】必須是真實淨買超，拒絕大跌被當成集中度
+        # 修正：必須是真實淨買超
         net_buy_shares = stock['net']
         capital_ratio = 0
         if shares_out and shares_out > 0 and net_buy_shares > 0:
@@ -192,7 +192,6 @@ def analyze_stock(args):
         has_rod = (upper_shadow > (body_len * 2)) and (upper_shadow > lower_shadow)
         vol_ratio_yest = current['Volume'] / yesterday['Volume'] if yesterday['Volume'] > 0 else 0
         
-        # 確認是否為多頭排列
         is_uptrend = current['Close'] > ma10 and current['Close'] > ma20
 
         if rank <= 40:
@@ -202,13 +201,9 @@ def analyze_stock(args):
                 res['washout'] = True
                 res['tag'] = f"鎖碼 {capital_ratio*100:.2f}% | 乖離 {price_diff_ma5*100:.1f}%"
 
-            # 🚀 【Pro級升級】主升段動態過濾
+            # 🚀 主升段動態過濾
             if net_buy_shares > 0 and current['Close'] > yesterday['Close'] and is_uptrend:
-                
-                # 環境惡劣時，提高鎖碼門檻至 0.8%
                 required_ratio = 0.008 if macro_score >= 50 else 0.005
-                
-                # 拒絕隔日沖：大空頭時，必須有實質的外資或投信買盤支撐
                 real_inst_backing = (stock['f_net'] > 0 or stock['t_net'] > 0) if macro_score >= 50 else True
 
                 if capital_ratio >= required_ratio and real_inst_backing:
@@ -260,152 +255,64 @@ if __name__ == "__main__":
             
         us_tech_msg = get_us_tech()
         
-        twii = yf.Ticker("^TWII").history(period="5d")
-        latest_date = twii.index[-1]
-        d_str = latest_date.strftime('%Y%m%d')
-        display_date = latest_date.strftime('%Y-%m-%d')
-        
+        # 抓取最近 10 天的大盤 K 線，用來回溯日期
+        twii = yf.Ticker("^TWII").history(period="10d")
         stocks = []
+        d_str = ""
+        display_date = ""
         
-        # --- 1. 抓取上市 ---
-        api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
-        try:
-            res = requests.get(api_url, headers=HEADERS, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                for row in data:
-                    stock_id = row.get('Code', '').strip()
-                    name = row.get('Name', '').strip()
-                    if not stock_id or stock_id.startswith('00'): continue 
-                    f_net = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', ''))
-                    t_net = int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
-                    net = int(str(row.get('Difference', '0')).replace(',', ''))
-                    stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net})
-        except: pass
+        # 🕵️‍♂️ 智能回溯機制：從最新交易日找起，撲空就往前推 (最多 4 天)
+        for offset in range(1, 5):
+            latest_date = twii.index[-offset]
+            d_str = latest_date.strftime('%Y%m%d')
+            display_date = latest_date.strftime('%Y-%m-%d')
+            stocks = []
             
-        if not stocks:
-            url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
+            # --- 1. 抓取上市 ---
+            api_url = "https://openapi.twse.com.tw/v1/fund/T86_ALL"
             try:
-                res = requests.get(url, headers=HEADERS, timeout=10)
+                res = requests.get(api_url, headers=HEADERS, timeout=10)
                 if res.status_code == 200:
-                    res_json = res.json()
-                    if res_json.get('stat') == 'OK':
-                        for row in res_json['data']:
-                            if len(row) > 18:
-                                stock_id = row[0].strip()
-                                name = row[1].strip()
-                                if stock_id.startswith('00'): continue 
-                                f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
-                                t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
-                                stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': f_net + t_net})
+                    data = res.json()
+                    if data and data[0].get('Date', '').replace('-', '') == d_str:
+                        for row in data:
+                            stock_id = row.get('Code', '').strip()
+                            name = row.get('Name', '').strip()
+                            if not stock_id or stock_id.startswith('00'): continue 
+                            f_net = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', ''))
+                            t_net = int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
+                            net = int(str(row.get('Difference', '0')).replace(',', ''))
+                            stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net})
             except: pass
+                
+            if not stocks:
+                url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
+                try:
+                    res = requests.get(url, headers=HEADERS, timeout=10)
+                    if res.status_code == 200:
+                        res_json = res.json()
+                        if res_json.get('stat') == 'OK':
+                            for row in res_json['data']:
+                                if len(row) > 18:
+                                    stock_id = row[0].strip()
+                                    name = row[1].strip()
+                                    if stock_id.startswith('00'): continue 
+                                    f_net = int(row[4].replace(',', '')) if row[4] != '--' else 0
+                                    t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
+                                    stocks.append({'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': f_net + t_net})
+                except: pass
 
-        # --- 2. 抓取上櫃 ---
-        try:
-            tw_year = latest_date.year - 1911
-            otc_date = f"{tw_year}/{latest_date.strftime('%m/%d')}"
-            otc_url = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}"
-            res_otc = requests.get(otc_url, headers=HEADERS, timeout=10)
-            if res_otc.status_code == 200:
-                data_otc = res_otc.json()
-                if 'aaData' in data_otc:
-                    for row in data_otc['aaData']:
-                        stock_id = row[0].strip()
-                        name = row[1].strip()
-                        if not stock_id.isdigit() or len(stock_id) != 4: continue 
-                        f_net_otc = int(row[8].replace(',', ''))
-                        t_net_otc = int(row[11].replace(',', ''))
-                        stocks.append({'id': stock_id, 'name': name, 'f_net': f_net_otc, 't_net': t_net_otc, 'net': f_net_otc + t_net_otc})
-        except: pass
-
-        # --- 3. 合併排序與執行 ---
-        if not stocks:
-            send_msg(f"❌ 所有資料引擎皆抓取失敗，交易所可能維護中。")
-        else:
-            stocks.sort(key=lambda x: x['net'], reverse=True)
-            
-            # 【重要】將 score 傳遞給判定引擎
-            scan_args = []
-            for i, s in enumerate(stocks[:150]):
-                scan_args.append((s, d_str, i + 1, score))
-            for s in stocks[-50:]:
-                scan_args.append((s, d_str, 999, score))
-            
-            washout_list, breakout_list = [], []
-            fake_bd_list, dry_up_list, rod_list = [], [], []
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-                results = list(executor.map(analyze_stock, scan_args))
-                
-            for res in results:
-                if not res: continue
-                s = res['stock']
-                price = res['current']['Close']
-                tag = res['tag']
-                sector = res['sector']
-                
-                if res['washout']: washout_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} ({tag})")
-                if res['breakout']: breakout_list.append(f"• {res['breakout_tier']} {sector} {s['id']} {s['name']}: 價 {price:.1f} ({tag})")
-                if res['fake_bd']: fake_bd_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (殺盤洗停損)")
-                if res['dry_up']: dry_up_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (極度鎖死)")
-                if res['rod']: rod_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
-
-            it_dump_list = sorted([s for s in stocks if s['t_net'] < -1500], key=lambda x: x['t_net'])[:5]
-            
-            # ================= 組合報告 =================
-            msg = f"🦞【戰情室 Pro 終極版｜{display_date}】\n"
-            msg += macro_msg + us_tech_msg
-            
-            msg += "\n🎯【主力獵殺區｜小股本菁英】\n========================\n"
-            
-            washout_str = "\n".join(washout_list) if washout_list else "無"
-            msg += f"🟢 洗碗秀 (大戶護盤伏擊)\n{washout_str}\n"
-            
-            breakout_str = "\n".join(breakout_list) if breakout_list else "無符合標準"
-            msg += f"🔴 主升段 (爆量衝鋒點火)\n{breakout_str}\n"
-            
-            msg += "\n🥷【闇黑兵法｜極端吃屍區】\n========================\n"
-            
-            fake_bd_str = "\n".join(fake_bd_list) if fake_bd_list else "無符合"
-            msg += f"🪤 破底翻 (假跌破真誘空)\n{fake_bd_str}\n"
-            
-            dry_up_str = "\n".join(dry_up_list) if dry_up_list else "無符合"
-            msg += f"🩸 終極窒息量 (主力偷偷鎖碼)\n{dry_up_str}\n"
-            
-            msg += "\n💀【高危雷區｜請勿接刀】\n========================\n"
-            msg += "🔪 投信無情結帳:\n"
-            if it_dump_list:
-                for s in it_dump_list:
-                    msg += f"• {s['id']} {s['name']}: 賣 {abs(int(s['t_net']/1000))} 張\n"
-            else: msg += "無\n"
-                
-            rod_str = "\n".join(rod_list) if rod_list else "無"
-            msg += f"⚡ 散戶絞肉機 (避雷針):\n{rod_str}\n"
-            
-            msg += "\n🔥 買超 Top 5 (大戶動向):\n"
-            for s in stocks[:5]:
-                msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{get_heat_level_tag(s['net'])}\n"
-                
-            msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
-            found_bird = False
-            for s in stocks[-10:][::-1]:
-                bird_tag = check_undying_bird(s['id'], d_str)
-                if bird_tag:
-                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
-                    found_bird = True
-            if not found_bird: msg += "無\n"
-            
-            msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
-            count = 0
-            for s in stocks:
-                if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
-                    msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
-                    count += 1
-                if count >= 5: break
-            if count == 0: msg += "無土洋合買標的。\n"
-                
-            send_msg(msg)
-
-    except Exception as e:
-        error_detail = traceback.format_exc()
-        send_msg(f"⚠️ 龍蝦系統核心崩潰！\n{str(e)}\n{error_detail[:300]}")
+            # --- 2. 抓取上櫃 ---
+            try:
+                tw_year = latest_date.year - 1911
+                otc_date = f"{tw_year}/{latest_date.strftime('%m/%d')}"
+                otc_url = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}"
+                res_otc = requests.get(otc_url, headers=HEADERS, timeout=10)
+                if res_otc.status_code == 200:
+                    data_otc = res_otc.json()
+                    if 'aaData' in data_otc:
+                        for row in data_otc['aaData']:
+                            stock_id = row[0].strip()
+                            name = row[1].strip()
+                            if not stock_id.isdigit() or len(stock_id) != 4: continue 
+                            f
