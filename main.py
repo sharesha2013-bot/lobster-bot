@@ -1,39 +1,47 @@
-import yfinance as yf
 import os
 import requests
+import yfinance as yf
 from datetime import datetime
 
-# 設定 Telegram 發送
-def send_telegram(text):
-    bot_token = os.getenv('BOT_TOKEN')
-    chat_id = "8543567603"
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text})
+# ==========================================
+# ⚙️ 設定區
+# ==========================================
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHAT_ID = "8543567603"
 
-def check_stock_data(ticker_symbol):
-    """
-    使用 yfinance 抓取股票資料
-    這裡以台積電 (2330.TW) 為例
-    """
-    # yfinance 台股代號需要加上 .TW
-    ticker = yf.Ticker(f"{ticker_symbol}.TW")
-    
-    # 獲取財務與籌碼相關資訊
-    info = ticker.info
-    
-    # 你可以在這裡篩選，例如：查看外資持股比例 (institutionalHolders)
-    # yfinance 會自動處理連線，不會被封鎖
-    return info
+# 你關注的股票清單 (以 yfinance 格式)
+WATCH_LIST = ["2330", "2317", "2454", "3008", "2382"] 
+
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
 def main():
-    # 測試：抓取台積電數據
-    try:
-        data = check_stock_data("2330")
-        name = data.get('longName', '未知')
-        # 測試發送
-        send_telegram(f"✅ yfinance 連線成功！\n目標: {name}\n資料抓取正常。")
-    except Exception as e:
-        send_telegram(f"❌ yfinance 錯誤: {e}")
+    msg = f"🦞【龍蝦投信雷達｜{datetime.now().strftime('%m/%d')}】\n\n"
+    found = False
+    
+    for symbol in WATCH_LIST:
+        try:
+            ticker = yf.Ticker(f"{symbol}.TW")
+            data = ticker.history(period="1d")
+            
+            if not data.empty:
+                price = data['Close'].iloc[-1]
+                change = (data['Close'].iloc[-1] - data['Open'].iloc[0]) / data['Open'].iloc[0] * 100
+                
+                # 這裡是一個精算邏輯範例：
+                # 判斷是否為「強勢股」(漲幅 > 2%)
+                if change > 2.0:
+                    msg += f"🔥 {symbol} 強勢訊號: {price:.2f} (漲幅: {change:.2f}%)\n"
+                    found = True
+        except:
+            continue
+            
+    if found:
+        send_telegram(msg)
+    else:
+        # 為了不洗版，沒符合條件時只發送簡短狀態
+        send_telegram(f"🦞 雷達報告: 今日關注清單均無強勢訊號 ({datetime.now().strftime('%H:%M')})")
 
 if __name__ == "__main__":
     main()
