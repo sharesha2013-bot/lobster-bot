@@ -1,4 +1,3 @@
-
 import os
 import time
 import requests
@@ -12,6 +11,13 @@ from datetime import datetime, timedelta
 # ==========================================
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
+
+# 🛡️ 關鍵防護：偽裝成正常使用者的瀏覽器，防止被證交所阻擋
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+    'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+}
 
 def send_telegram(text):
     """傳送 Telegram 訊息，自動分段避免超過 4000 字元限制"""
@@ -49,7 +55,8 @@ def get_valid_trading_days(days_needed=5, max_lookback=15):
         url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
         
         try:
-            res = requests.get(url, timeout=10)
+            # 🛡️ 加入 HEADERS 偽裝
+            res = requests.get(url, headers=HEADERS, timeout=10)
             data = res.json()
             if data.get('stat') == 'OK':
                 valid_dates.append(d_str)
@@ -75,7 +82,8 @@ def fetch_twse_data(valid_dates):
         # 1. 抓取三大法人 (T86)
         inst_url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
         try:
-            res = requests.get(inst_url, timeout=10)
+            # 🛡️ 加入 HEADERS 偽裝
+            res = requests.get(inst_url, headers=HEADERS, timeout=10)
             data = res.json()
             if data.get('stat') == 'OK':
                 for row in data['data']:
@@ -103,7 +111,8 @@ def fetch_twse_data(valid_dates):
         # 2. 抓取信用交易/融資 (MI_MARGN)
         margin_url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={d_str}&selectType=ALL"
         try:
-            res = requests.get(margin_url, timeout=10)
+            # 🛡️ 加入 HEADERS 偽裝
+            res = requests.get(margin_url, headers=HEADERS, timeout=10)
             data = res.json()
             if data.get('stat') == 'OK':
                 # MI_MARGN 的表格有多個，通常 ['data'] 包含個股明細
@@ -128,7 +137,6 @@ def fetch_twse_data(valid_dates):
 def analyze_candidates(stocks_data):
     """計算連買天數與融資變化，篩選出須進行技術面驗證的候選名單"""
     candidates = []
-    minefield_candidates = []
     
     for sid, data in stocks_data.items():
         # 反轉陣列，讓 index 0 是最新的一天 (T日, T-1, T-2...)
@@ -199,7 +207,7 @@ def check_technicals(candidates):
         sid = cand['sid']
         
         try:
-            # 優先嘗試 .TW，無資料改 .TWO (皆使用 yfinance 防當機機制)
+            # 優先嘗試 .TW，無資料改 .TWO
             tick = yf.Ticker(f"{sid}.TW")
             hist = tick.history(period="2mo")
             if hist.empty or len(hist) < 20:
@@ -271,7 +279,6 @@ def check_technicals(candidates):
                     accum_list.append(full_str)
 
         except Exception as e:
-            # 遇到單一股票報錯，忽略並繼續下一檔
             continue
 
     return uptrend_list, accum_list, minefield_list
@@ -307,7 +314,7 @@ def main():
         msg += "\n\n".join(uptrend) if uptrend else "今日無符合標的"
         msg += "\n\n"
         
-        msg += "🛡️【法人布局區】(外資/投信連買3天+站上MA20)\n"
+        msg += "🛡️【法人布局區】(外買/投買>=3天+站上MA20)\n"
         msg += "="*35 + "\n"
         msg += "\n\n".join(accum) if accum else "今日無符合標的"
         msg += "\n\n"
