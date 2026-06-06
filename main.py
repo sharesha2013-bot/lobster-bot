@@ -32,7 +32,7 @@ def send_msg(text):
     except: pass
 
 # ==========================================
-# 📊 輔助模組 (宏觀天氣與美股)
+# 📊 輔助模組 (宏觀天氣與不死鳥)
 # ==========================================
 def get_macro_score():
     score, reasons = 0, []
@@ -88,10 +88,10 @@ def analyze_stock(args):
         
         df.index = df.index.tz_localize(None)
         df['date_str'] = df.index.strftime('%Y%m%d')
-        if target_date_str in df['date_str'].values:
-            target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
-            df = df.iloc[:target_idx + 1]
-            
+        if target_date_str not in df['date_str'].values: return None
+        
+        target_idx = df.index.get_loc(df[df['date_str'] == target_date_str].index[0])
+        df = df.iloc[:target_idx + 1]
         if len(df) < 20: return None
         current, yesterday = df.iloc[-1], df.iloc[-2]
         
@@ -99,12 +99,11 @@ def analyze_stock(args):
         trade_value = current['Close'] * current['Volume']
         if trade_value < 100000000: return None
         
-        # 取得股本
         shares_out = None
         try: shares_out = ticker.fast_info.shares
         except: shares_out = ticker.info.get('sharesOutstanding')
         
-        # ⚔️ 第三刀：股本怪獸過濾 (<3000億)
+        # ⚔️ 第三刀：市值過濾 (<3000億)
         if shares_out:
             market_cap = shares_out * current['Close']
             if market_cap > 300000000000: return None
@@ -120,7 +119,7 @@ def analyze_stock(args):
 
         res = {'stock': stock, 'tier': '', 'washout': False, 'rescue': False, 'monster': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current, 'tag': '', 'sector': f"[{SECTOR_MAP.get(stock_id, '個股')}]"}
         
-        # ⚔️ 第二刀 & 第五刀：游擊隊 S/A/B 評分系統
+        # ⚔️ 第二刀 & 第五刀：游擊隊評分系統
         if stock['net'] > 0:
             score = 0
             if capital_ratio >= 0.005: score += 20
@@ -129,7 +128,7 @@ def analyze_stock(args):
             elif vol_ratio_yest >= 1.2: score += 10
             if current['Close'] > ma20: score += 10
             if cost_gap > 0: score += 10
-            if stock['f_net'] > 0 and stock['t_net'] > 0: score += 25 # 雙法人純度加成
+            if stock['f_net'] > 0 and stock['t_net'] > 0: score += 25 
 
             if score >= 85: res['tier'] = "🔥[S級獵物]"
             elif score >= 70: res['tier'] = "🔴[A級獵物]"
@@ -138,27 +137,25 @@ def analyze_stock(args):
             if res['tier']:
                 res['tag'] = f"評分:{score} | 鎖碼:{capital_ratio*100:.2f}% | 量增:{vol_ratio_yest:.1f}倍"
 
-        # ⚔️ 第六刀：妖股雷達 (5日漲20% + 雙法人 + 爆量)
+        # ⚔️ 第六刀：妖股雷達
         if len(df) >= 6:
             pct_5d = (current['Close'] - df['Close'].iloc[-6]) / df['Close'].iloc[-6]
             if pct_5d > 0.20 and stock['f_net'] > 0 and stock['t_net'] > 0 and vol_ratio_yest > 1.2:
                 res['monster'] = True
                 
-        # 🚑 自救專區：黃金救援區 -5% ~ -12% 且雙法人點火
+        # 🚑 自救專區
         if -0.12 <= cost_gap <= -0.05 and stock['f_net'] > 0 and stock['t_net'] > 0:
             res['rescue'] = True
             res['tag'] = f"Gap:{cost_gap*100:.1f}% | 雙法人急救"
 
-        # 斷頭禁區過濾：放棄救援直接拉黑
-        if cost_gap < -0.15:
-            return None
+        # 斷頭禁區
+        if cost_gap < -0.15: return None
 
-        # 舊精華：洗碗秀
+        # 舊精華
         if stock['net'] > 0 and capital_ratio >= 0.001 and (-0.01 <= (current['Close'] - ma5)/ma5 <= 0.03):
             res['washout'] = True
             res['tag'] = f"鎖碼:{capital_ratio*100:.2f}%"
 
-        # 舊精華：極端盤勢防禦
         has_rod = (current['High'] - max(current['Close'], current['Open']) > abs(current['Close'] - current['Open']) * 2)
         if current['Low'] < df['Low'].iloc[-10:-1].min() and current['Close'] > yesterday['Close']: res['fake_bd'] = True
         if current['Volume'] < (df['Volume'].tail(5).mean() * 0.35) and current['Close'] > ma20: res['dry_up'] = True
@@ -181,55 +178,51 @@ if __name__ == "__main__":
         stocks, etfs = [], []
         d_str, display_date = "", ""
         
-        # 🔥【關鍵修復】: 直接從證交所 API 讀取「絕對最新」的交易日，徹底解決六日抓錯日期的問題
-        try:
-            date_res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
-            if date_res.status_code == 200 and len(date_res.json()) > 0:
-                d_str = date_res.json()[0].get('Date', '').replace('-', '')
-                display_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
-        except: pass
-
-        if not d_str: # 如果 API 掛掉，退回安全備用方案
-            twii = yf.Ticker("^TWII").history(period="5d")
-            d_str = twii.index[-1].strftime('%Y%m%d')
-            display_date = twii.index[-1].strftime('%Y-%m-%d')
-            
-        # ==========================================
-        # 上市資料抓取 (不再迴圈亂找日期，精準鎖定 d_str)
-        # ==========================================
+        # 🔥 直接讀取 API 提供的「絕對最新交易日」，不再用 YF 猜測日期，徹底解決週末抓不到資料的問題！
         try:
             res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
             if res.status_code == 200:
-                for row in res.json():
-                    sid = row.get('Code', '').strip()
-                    fn, tn = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', '')), int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
-                    if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                    elif not sid.startswith('00'): stocks.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                data = res.json()
+                if len(data) > 0:
+                    d_str = data[0].get('Date', '').replace('-', '')
+                    display_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}" if len(d_str) == 8 else d_str
+                    
+                    for row in data:
+                        sid = row.get('Code', '').strip()
+                        fn = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', ''))
+                        tn = int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
+                        net = fn + tn
+                        if sid in ['0050', '0056', '00919', '00929']: 
+                            etfs.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': net})
+                        elif not sid.startswith('00'): 
+                            stocks.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': net})
         except: pass
                 
-        # ==========================================
-        # 上櫃資料抓取
-        # ==========================================
-        try:
-            otc_date = f"{int(d_str[:4]) - 1911}/{d_str[4:6]}/{d_str[6:]}"
-            res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=10)
-            if res_otc.status_code == 200 and 'aaData' in res_otc.json():
-                for row in res_otc.json()['aaData']:
-                    if len(row) > 12:
-                        try:
-                            sid = row[0].strip()
-                            fn, tn = int(row[8].replace(',', '')), int(row[11].replace(',', ''))
-                            if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                            elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): stocks.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                        except: continue
-        except: pass
+        # 上櫃使用剛剛成功取得的 d_str 去精準打擊
+        if d_str and len(d_str) == 8:
+            try:
+                otc_year = int(d_str[:4]) - 1911
+                otc_date = f"{otc_year}/{d_str[4:6]}/{d_str[6:]}"
+                res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=10)
+                if res_otc.status_code == 200 and 'aaData' in res_otc.json():
+                    for row in res_otc.json()['aaData']:
+                        if len(row) > 12:
+                            try:
+                                sid = row[0].strip()
+                                fn = int(row[8].replace(',', ''))
+                                tn = int(row[11].replace(',', ''))
+                                net = fn + tn
+                                if sid in ['0050', '0056', '00919', '00929']: 
+                                    etfs.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': net})
+                                elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): 
+                                    stocks.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': net})
+                            except: continue
+            except: pass
 
         if not stocks:
-            send_msg(f"❌ 雷達警告：無法取得 {display_date} 交易資料。")
+            send_msg(f"❌ 雷達警告：無法從證交所 API 取得最新交易資料。")
         else:
-            # ⚔️ 第七刀：ETF 風向球分析
-            etf_msg = ""
-            etf_buys = [e for e in etfs if e['f_net'] > 5000000 or e['t_net'] > 5000000] # 買超大於5000張
+            etf_buys = [e for e in etfs if e['f_net'] > 5000000 or e['t_net'] > 5000000]
             if etf_buys:
                 etf_names = [e['id'] for e in etf_buys]
                 etf_msg = f"📡【ETF 風向球】：{', '.join(etf_names)} 大買 ｜ 系統風險偏好回升！\n"
@@ -259,10 +252,28 @@ if __name__ == "__main__":
                 if res['rescue']: rescue_list.append(line)
                 if res['fake_bd']: fake_bd_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}")
                 if res['dry_up']: dry_up_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}")
-                if res['rod']: rod_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (爆量避雷針)")
+                if res['rod']: rod_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
 
             it_dump_list = sorted([s for s in stocks if s['t_net'] < -2000000], key=lambda x: x['t_net'])[:5]
             
+            top5_msg = ""
+            for s in stocks[:5]:
+                net_k = int(s['net']/1000)
+                if net_k >= 20000: icon = "🔥[Lv.3 沸騰]"
+                elif net_k >= 10000: icon = "♨️[Lv.2 加溫]"
+                elif net_k >= 5000: icon = "🔥[Lv.1 點火]"
+                else: icon = ""
+                top5_msg += f"• {s['id']} {s['name']}: {net_k} 張 {icon}\n"
+
+            co_buy_msg = ""
+            for s in stocks[:100]:
+                if s['f_net'] > 0 and s['t_net'] > 0:
+                    fk = int(s['f_net']/1000)
+                    tk = int(s['t_net']/1000)
+                    net_k = int(s['net']/1000)
+                    if net_k >= 1000:
+                        co_buy_msg += f"⚡ {s['id']} {s['name']}: 共買 {net_k} 張 (外{fk}/投{tk})\n"
+
             # ================= 戰報組合 =================
             msg = f"🦞【戰情室 X 終極完全體｜{display_date}】\n"
             msg += etf_msg + macro_msg
@@ -284,9 +295,11 @@ if __name__ == "__main__":
             msg += f"🩸 終極窒息量 (主力偷偷鎖碼)\n{chr(10).join(dry_up_list) if dry_up_list else '無'}\n"
             
             msg += "\n💀【高危雷區｜請勿接刀】\n========================\n"
-            msg += "🔪 投信無情結帳 (賣超>2千張):\n"
+            msg += "🔪 投信無情結帳:\n"
             msg += "".join([f"• {s['id']} {s['name']}: 賣 {abs(int(s['t_net']/1000))} 張\n" for s in it_dump_list]) if it_dump_list else "無\n"
             msg += f"⚡ 散戶絞肉機 (避雷針):\n{chr(10).join(rod_list) if rod_list else '無'}\n"
+
+            msg += f"\n🔥 買超 Top 5 (大戶動向):\n{top5_msg}"
             
             msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
             found_bird = False
@@ -296,6 +309,8 @@ if __name__ == "__main__":
                     msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
                     found_bird = True
             if not found_bird: msg += "無\n"
+
+            msg += f"\n🎯【主力狙擊鏡｜土洋合買】:\n{co_buy_msg if co_buy_msg else '無'}\n"
             
             send_msg(msg)
 
