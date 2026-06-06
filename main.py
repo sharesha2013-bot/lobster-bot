@@ -1,7 +1,6 @@
 import os
 import requests
-import time
-import random
+import traceback
 from datetime import datetime
 
 # ==========================================
@@ -10,66 +9,65 @@ from datetime import datetime
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
 
-# 模擬真實瀏覽器指紋 (防鎖關鍵)
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Referer": "https://www.twse.com.tw/zh/trading/foreign/t86.html"
-}
-
 def send_telegram(text):
-    """ 強制分段發送，防止 Telegram API 截斷 """
-    for i in range(0, len(text), 4000):
-        try:
-            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
-                          json={"chat_id": CHAT_ID, "text": text[i:i+4000]}, timeout=15)
-        except: pass
-
-def fetch_data():
-    """ 
-    最簡架構：僅抓取當日資料
-    若當日無資料 (如週末)，直接返回 None 並靜默，不再拋錯
-    """
-    d_str = datetime.now().strftime('%Y%m%d')
-    url = f"https://www.twse.com.tw/r/t86?date={d_str}&selectType=ALL"
-    
+    """ 強制發送訊息，確保你能收到結果 """
     try:
-        # 強制延遲 1-2 秒模擬人類行為
-        time.sleep(random.uniform(1, 2))
-        response = requests.get(url, headers=HEADERS, timeout=20)
-        data = response.json()
-        
-        # 檢查是否有資料 (長度超過 100 確保不是空表)
-        if 'data' in data and len(data['data']) > 100:
-            return data['data'], d_str
-    except:
-        pass # 失敗即靜默
-    return None, None
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        resp = requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=15)
+        if resp.status_code != 200:
+            print(f"發送失敗: {resp.text}")
+    except Exception as e:
+        print(f"連線失敗: {e}")
 
 def main():
-    rows, d_str = fetch_data()
-    
-    # 若無資料，系統安靜退出，不再發送「雷達警告」
-    if not rows:
-        return
-
-    # 籌碼精算戰法：法人合計買超 > 5000 張
-    report_list = []
-    for row in rows:
-        try:
-            sid, name = row[0].strip(), row[1].strip()
-            # 欄位：4 外資合計, 10 投信合計
-            fn = int(row[4].replace(',', ''))
-            tn = int(row[10].replace(',', ''))
-            net = fn + tn
-            
-            if net > 5000:
-                report_list.append(f"• {sid} {name}: {net}張 (外:{fn}/投:{tn})")
-        except: continue
+    try:
+        d_str = datetime.now().strftime('%Y%m%d')
+        url = f"https://www.twse.com.tw/r/t86?date={d_str}&selectType=ALL"
+        headers = {"User-Agent": "Mozilla/5.0"}
         
-    if report_list:
-        msg = f"🦞【籌碼精算戰報｜{d_str}】\n\n🎯 強勢狙擊 (法人合計買超 > 5000張):\n"
-        msg += "\n".join(report_list[:15])
-        send_telegram(msg)
+        # 進行抓取
+        resp = requests.get(url, headers=headers, timeout=10)
+        
+        # 錯誤判斷：若網路連線失敗
+        if resp.status_code != 200:
+            send_telegram(f"❌ 錯誤：無法連接證交所 (Status: {resp.status_code})")
+            return
+
+        data = resp.json()
+        
+        # 錯誤判斷：若 API 有回應但資料結構不對
+        if 'data' not in data:
+            send_telegram("❌ 錯誤：API 回應結構異常，可能無交易資料。")
+            return
+            
+        # 邏輯判斷：若有回應但資料為空 (如假日)
+        if len(data['data']) == 0:
+            send_telegram(f"ℹ️ 狀態：{datetime.now().strftime('%Y-%m-%d')} 無交易資料 (今日休市)。")
+            return
+
+        # 執行過濾邏輯
+        report_list = []
+        for row in data['data']:
+            try:
+                sid, name = row[0].strip(), row[1].strip()
+                fn = int(row[4].replace(',', ''))
+                tn = int(row[10].replace(',', ''))
+                net = fn + tn
+                if net > 5000:
+                    report_list.append(f"• {sid} {name}: {net}張")
+            except: continue
+            
+        if report_list:
+            msg = f"🦞【籌碼精算戰報｜{d_str}】\n\n🎯 法人合計買超 > 5000張:\n"
+            msg += "\n".join(report_list[:15])
+            send_telegram(msg)
+        else:
+            send_telegram("⚠️ 系統執行正常：今日無股票符合「法人買超 > 5000張」的條件。")
+
+    except Exception as e:
+        # 詳細回報錯誤內容
+        error_msg = f"❌ 程式發生錯誤:\n{str(e)}\n\n{traceback.format_exc()[:200]}"
+        send_telegram(error_msg)
 
 if __name__ == "__main__":
     main()
