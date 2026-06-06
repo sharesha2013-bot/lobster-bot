@@ -5,6 +5,7 @@ import concurrent.futures
 from datetime import datetime, timedelta
 import yfinance as yf
 import pandas as pd
+import time
 
 # ==========================================
 # ⚙️ 系統設定區 & 游擊隊族群字典
@@ -28,8 +29,10 @@ HEADERS = {
 
 def send_msg(text):
     if not BOT_TOKEN: return
-    try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": text}, timeout=10)
-    except: pass
+    try: 
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    except Exception as e: 
+        print(f"ERROR: Telegram send failed - {e}")
 
 # ==========================================
 # 📊 輔助模組 (宏觀天氣與美股)
@@ -42,19 +45,22 @@ def get_macro_score():
             score += 35; reasons.append("💸台幣急貶")
         elif len(twd) >= 1 and twd['Close'].iloc[-1] > 32.5: 
             score += 15; reasons.append("⚠️台幣弱勢")
-    except: pass
+    except Exception as e: 
+        print(f"ERROR: TWD macro failed - {e}")
 
     try:
         otc = yf.Ticker("^TWO").history(period="1mo")
         if len(otc) >= 2 and ((otc['Close'].iloc[-1] - otc['Close'].iloc[-2]) / otc['Close'].iloc[-2]) * 100 < -1.0: 
             score += 45; reasons.append("🩸櫃買下殺")
-    except: pass
+    except Exception as e: 
+        print(f"ERROR: OTC macro failed - {e}")
 
     try:
         twii = yf.Ticker("^TWII").history(period="1mo")
         if len(twii) >= 2 and ((twii['Close'].iloc[-1] - twii['Close'].iloc[-2]) / twii['Close'].iloc[-2]) * 100 < -1.0:
             score += 30; reasons.append("💀大盤下殺")
-    except: pass
+    except Exception as e: 
+        print(f"ERROR: TWII macro failed - {e}")
     return score, reasons
 
 def check_undying_bird(stock_id, target_date_str):
@@ -67,21 +73,23 @@ def check_undying_bird(stock_id, target_date_str):
         if idx < 1: return "" 
         pct = ((df['Close'].iloc[idx] - df['Close'].iloc[idx-1]) / df['Close'].iloc[idx-1]) * 100
         if pct >= -1.5: return f" 🦅[不死鳥 {pct:+.1f}%]"
-    except: return ""
+    except Exception as e: 
+        print(f"ERROR: Undying bird failed for {stock_id} - {e}")
+        return ""
     return ""
 
 # ==========================================
-# 🎯 核心大腦：龍蝦雷達 X (七刀引擎)
+# 🎯 核心大腦：三大名單過濾 X (七刀引擎)
 # ==========================================
 def analyze_stock(args):
-    stock, target_date_str, rank, macro_score = args
+    stock, target_date_str, rank, macro_score, inst_history_map = args
     stock_id = stock['id']
     try:
         ticker = yf.Ticker(f"{stock_id}.TW")
-        df = ticker.history(period="1mo")
+        df = ticker.history(period="2mo")
         if df.empty: 
             ticker = yf.Ticker(f"{stock_id}.TWO")
-            df = ticker.history(period="1mo")
+            df = ticker.history(period="2mo")
             
         df = df[df['Volume'] > 0].dropna(subset=['Close', 'Volume'])
         if len(df) < 20: return None
@@ -102,70 +110,156 @@ def analyze_stock(args):
         # 取得股本
         shares_out = None
         try: shares_out = ticker.fast_info.shares
-        except: shares_out = ticker.info.get('sharesOutstanding')
+        except Exception as e: 
+            try: shares_out = ticker.info.get('sharesOutstanding')
+            except Exception as e2: print(f"ERROR: Shares out failed {stock_id} - {e2}")
         
         # ⚔️ 第三刀：股本怪獸過濾 (<3000億)
         if shares_out:
             market_cap = shares_out * current['Close']
             if market_cap > 300000000000: return None
 
-        # ⚔️ 第四刀：計算 VWAP20 與 Cost Gap
+        # ⚔️ 第四刀：計算 VWAP20
         v20_vol = df['Volume'].tail(20).sum()
         vwap20 = (df['Close'].tail(20) * df['Volume'].tail(20)).sum() / v20_vol if v20_vol > 0 else df['Close'].tail(20).mean()
-        cost_gap = (current['Close'] - vwap20) / vwap20
         
         ma5, ma20 = df['Close'].tail(5).mean(), df['Close'].tail(20).mean()
+        ma60 = df['Close'].tail(60).mean() if len(df) >= 60 else ma20
         vol_ratio_yest = current['Volume'] / yesterday['Volume'] if yesterday['Volume'] > 0 else 0
         capital_ratio = stock['net'] / shares_out if shares_out and shares_out > 0 and stock['net'] > 0 else 0
 
-        res = {'stock': stock, 'tier': '', 'washout': False, 'rescue': False, 'monster': False, 'fake_bd': False, 'dry_up': False, 'rod': False, 'current': current, 'tag': '', 'sector': f"[{SECTOR_MAP.get(stock_id, '個股')}]"}
+        # 法人歷史資料計算升級
+        history = inst_history_map.get(stock_id, [])
+        consec_days = 0
+        cum_buy = 0
+        cost_sum = 0
+        cost_vol = 0
         
-        # ⚔️ 第二刀 & 第五刀：游擊隊 S/A/B 評分系統
-        if stock['net'] > 0:
-            score = 0
-            if capital_ratio >= 0.005: score += 20
-            if capital_ratio >= 0.008: score += 15
-            if vol_ratio_yest >= 2.0: score += 20
-            elif vol_ratio_yest >= 1.2: score += 10
-            if current['Close'] > ma20: score += 10
-            if cost_gap > 0: score += 10
-            if stock['f_net'] > 0 and stock['t_net'] > 0: score += 25 # 雙法人純度加成
-
-            if score >= 85: res['tier'] = "🔥[S級獵物]"
-            elif score >= 70: res['tier'] = "🔴[A級獵物]"
-            elif score >= 55: res['tier'] = "🟢[B級獵物]"
-
-            if res['tier']:
-                res['tag'] = f"評分:{score} | 鎖碼:{capital_ratio*100:.2f}% | 量增:{vol_ratio_yest:.1f}倍"
-
-        # ⚔️ 第六刀：妖股雷達 (5日漲20% + 雙法人 + 爆量)
-        if len(df) >= 6:
-            pct_5d = (current['Close'] - df['Close'].iloc[-6]) / df['Close'].iloc[-6]
-            if pct_5d > 0.20 and stock['f_net'] > 0 and stock['t_net'] > 0 and vol_ratio_yest > 1.2:
-                res['monster'] = True
+        for h in history:
+            net = h['net']
+            if net > 0:
+                consec_days += 1
+                cum_buy += net
+                # 推估成本 (以當日收盤價粗估)
+                cost_sum += net * df[df['date_str'] == h['date_str']]['Close'].mean() if not df[df['date_str'] == h['date_str']].empty else (net * current['Close'])
+                cost_vol += net
+            else:
+                break # 中斷連買
                 
-        # 🚑 自救專區：黃金救援區 -5% ~ -12% 且雙法人點火
-        if -0.12 <= cost_gap <= -0.05 and stock['f_net'] > 0 and stock['t_net'] > 0:
-            res['rescue'] = True
-            res['tag'] = f"Gap:{cost_gap*100:.1f}% | 雙法人急救"
+        avg_cost = (cost_sum / cost_vol) if cost_vol > 0 else vwap20
+        cost_gap = (current['Close'] - avg_cost) / avg_cost if avg_cost > 0 else 0
 
-        # 斷頭禁區過濾：放棄救援直接拉黑
-        if cost_gap < -0.15:
-            return None
+        res = {
+            'stock': stock, 
+            'sector': f"[{SECTOR_MAP.get(stock_id, '個股')}]",
+            'current': current,
+            'is_rescue': False,
+            'is_uptrend': False,
+            'is_danger': False,
+            'rescue_info': "",
+            'uptrend_info': "",
+            'danger_info': "",
+            'washout': False
+        }
 
-        # 舊精華：洗碗秀
+        # ========================================
+        # 🎯 第一區：法人自救區
+        # ========================================
+        # 條件：法人連續買超、累積買超量明顯、股價接近推估成本、回檔幅度合理、尚未跌破重要結構(MA60)
+        is_structure_safe = current['Close'] > ma60
+        is_buying_streak = consec_days >= 2 or cum_buy > 2000
+        is_pullback = -0.15 <= cost_gap <= -0.02
+        
+        if is_buying_streak and is_pullback and is_structure_safe:
+            res['is_rescue'] = True
+            res['rescue_info'] = f"套牢約 {cost_gap*100:.1f}% | 連買 {consec_days} 天 | 累積 {cum_buy} 張 | 成本約 {avg_cost:.1f} 元"
+
+        # ========================================
+        # 🚀 第二區：主升段雷達
+        # ========================================
+        # 條件：雙法人買超、鎖碼比例高、成交量放大、趨勢向上、突破整理區
+        is_dual_buy = stock['f_net'] > 0 and stock['t_net'] > 0
+        is_trend_up = current['Close'] > ma5 > ma20
+        is_vol_up = vol_ratio_yest >= 1.5
+        is_breakout = current['Close'] >= df['Close'].tail(10).max()
+        
+        # 妖股雷達邏輯融入主升段
+        pct_5d = (current['Close'] - df['Close'].iloc[-6]) / df['Close'].iloc[-6] if len(df) >= 6 else 0
+        is_monster = pct_5d > 0.20 and is_dual_buy and is_vol_up
+        
+        if is_dual_buy and is_trend_up and (is_vol_up or is_breakout or capital_ratio >= 0.005 or is_monster):
+            res['is_uptrend'] = True
+            monster_tag = "🚀[妖股] " if is_monster else ""
+            res['uptrend_info'] = f"{monster_tag}量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}% | 法人買 {stock['net']} 張"
+
+        # ========================================
+        # 💀 第三區：避雷區
+        # ========================================
+        # 條件：投信大賣、爆量長上影、法人撤退、跌破重要均線、假突破
+        is_trust_dump = stock['t_net'] < -1000
+        is_broken = current['Close'] < ma20
+        has_rod = (current['High'] - max(current['Close'], current['Open']) > abs(current['Close'] - current['Open']) * 2) and current['Volume'] > (df['Volume'].tail(5).mean() * 1.5)
+        is_fake_bd = current['Low'] < df['Low'].iloc[-10:-1].min() and current['Close'] > yesterday['Close'] # 假跌破保留為特定觀察
+        
+        if is_trust_dump or (has_rod and is_broken) or (cum_buy == 0 and stock['net'] < -3000):
+            res['is_danger'] = True
+            res['danger_info'] = f"投信賣 {stock['t_net']} 張 | 跌破均線 | 避雷針現象"
+
+        # 舊精華：洗碗秀 (作為附加標籤)
         if stock['net'] > 0 and capital_ratio >= 0.001 and (-0.01 <= (current['Close'] - ma5)/ma5 <= 0.03):
             res['washout'] = True
-            res['tag'] = f"鎖碼:{capital_ratio*100:.2f}%"
-
-        # 舊精華：極端盤勢防禦
-        has_rod = (current['High'] - max(current['Close'], current['Open']) > abs(current['Close'] - current['Open']) * 2)
-        if current['Low'] < df['Low'].iloc[-10:-1].min() and current['Close'] > yesterday['Close']: res['fake_bd'] = True
-        if current['Volume'] < (df['Volume'].tail(5).mean() * 0.35) and current['Close'] > ma20: res['dry_up'] = True
-        if current['Volume'] > (df['Volume'].tail(5).mean() * 1.5) and has_rod: res['rod'] = True
-
+            
         return res
-    except: return None
+    except Exception as e: 
+        print(f"ERROR: analyze_stock failed for {stock_id} - {e}")
+        return None
+
+# ==========================================
+# 歷史法人資料收集
+# ==========================================
+def get_historical_inst_data(target_dates):
+    history_map = {}
+    for d_obj in target_dates:
+        d_str = d_obj.strftime('%Y%m%d')
+        # 上市
+        try:
+            res = requests.get(f"https://www.twse.com.tw/r/t86?date={d_str}&selectType=ALL", headers=HEADERS, timeout=5)
+            if res.status_code == 200 and 'data' in res.json():
+                for row in res.json()['data']:
+                    sid = row[0].strip()
+                    try:
+                        fn = int(str(row[4]).replace(',', ''))
+                        tn = int(str(row[10]).replace(',', ''))
+                        if sid not in history_map: history_map[sid] = []
+                        history_map[sid].append({'date_str': d_str, 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                    except Exception as e: pass
+        except Exception as e: 
+            print(f"ERROR: TWSE history fetch failed for {d_str} - {e}")
+            
+        # 上櫃
+        try:
+            otc_date = f"{d_obj.year - 1911}/{d_obj.strftime('%m/%d')}"
+            res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=5)
+            if res_otc.status_code == 200 and 'aaData' in res_otc.json():
+                for row in res_otc.json()['aaData']:
+                    if len(row) > 12:
+                        sid = row[0].strip()
+                        try:
+                            fn = int(row[8].replace(',', ''))
+                            tn = int(row[11].replace(',', ''))
+                            if sid not in history_map: history_map[sid] = []
+                            history_map[sid].append({'date_str': d_str, 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                        except Exception as e: pass
+        except Exception as e: 
+            print(f"ERROR: TPEX history fetch failed for {otc_date} - {e}")
+            
+        time.sleep(1) # 避免 API rate limit
+    
+    # 確保歷史排序由新到舊
+    for sid in history_map:
+        history_map[sid] = sorted(history_map[sid], key=lambda x: x['date_str'], reverse=True)
+        
+    return history_map
 
 # ==========================================
 # 🚀 主程式執行區
@@ -178,18 +272,20 @@ if __name__ == "__main__":
         elif score >= 50: macro_msg = f"⚠️【環境風險：{score}分】警報亮起，縮小部位。{reason_str}\n"
         else: macro_msg = f"🟢【環境風險：{score}分】環境安全，適合游擊。{reason_str}\n"
             
-        twii = yf.Ticker("^TWII").history(period="10d")
+        twii = yf.Ticker("^TWII").history(period="15d")
         stocks, etfs = [], []
         d_str, display_date = "", ""
+        target_dates = []
+        latest_date_obj = None
         
-        # ⚠️ 完全保留你提供的原版安全抓取迴圈
+        # 找出最近的有效交易日
         for offset in range(1, 6):
             if len(twii.index) < offset: break
-            latest_date = twii.index[-offset]
-            d_str, display_date = latest_date.strftime('%Y%m%d'), latest_date.strftime('%Y-%m-%d')
-            stocks, etfs = [], []
+            latest_date_obj = twii.index[-offset]
+            d_str = latest_date_obj.strftime('%Y%m%d')
+            display_date = latest_date_obj.strftime('%Y-%m-%d')
             
-            # 上市
+            # 取得當日上市櫃
             try:
                 res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
                 if res.status_code == 200:
@@ -199,11 +295,11 @@ if __name__ == "__main__":
                         fn, tn = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', '')), int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
                         if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
                         elif not sid.startswith('00'): stocks.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-            except: pass
+            except Exception as e: 
+                print(f"ERROR: Current day TWSE fetch failed - {e}")
                 
-            # 上櫃
             try:
-                otc_date = f"{latest_date.year - 1911}/{latest_date.strftime('%m/%d')}"
+                otc_date = f"{latest_date_obj.year - 1911}/{latest_date_obj.strftime('%m/%d')}"
                 res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=10)
                 if res_otc.status_code == 200 and 'aaData' in res_otc.json():
                     for row in res_otc.json()['aaData']:
@@ -213,17 +309,24 @@ if __name__ == "__main__":
                                 fn, tn = int(row[8].replace(',', '')), int(row[11].replace(',', ''))
                                 if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
                                 elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): stocks.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                            except: continue
-            except: pass
+                            except Exception as e: continue
+            except Exception as e: 
+                print(f"ERROR: Current day TPEX fetch failed - {e}")
             
-            if stocks: break # 只要抓到任何一天的資料，就跳出迴圈
+            if stocks: 
+                # 建立歷史交易日清單 (含當日，往前推 5 天)
+                target_dates = [twii.index[-i] for i in range(offset, min(offset + 5, len(twii.index)))]
+                break 
 
         if not stocks:
-            send_msg(f"❌ 雷達警告：已回溯 5 個交易日無資料。")
+            send_msg(f"❌ 雷達警告：已回溯無資料。")
         else:
-            # ⚔️ 第七刀：ETF 風向球分析
+            # 取得歷史籌碼 (升級法人邏輯核心)
+            inst_history_map = get_historical_inst_data(target_dates)
+            
+            # ETF 風向球
             etf_msg = ""
-            etf_buys = [e for e in etfs if e['f_net'] > 5000000 or e['t_net'] > 5000000] # 買超大於5000張
+            etf_buys = [e for e in etfs if e['f_net'] > 5000000 or e['t_net'] > 5000000]
             if etf_buys:
                 etf_names = [e['id'] for e in etf_buys]
                 etf_msg = f"📡【ETF 風向球】：{', '.join(etf_names)} 大買 ｜ 系統風險偏好回升！\n"
@@ -231,75 +334,48 @@ if __name__ == "__main__":
                 etf_msg = f"📡【ETF 風向球】：大資金觀望中。\n"
 
             stocks.sort(key=lambda x: x['net'], reverse=True)
-            scan_args = [(s, d_str, i + 1, score) for i, s in enumerate(stocks[:200])] + [(s, d_str, 999, score) for s in stocks[-50:]]
+            scan_args = [(s, d_str, i + 1, score, inst_history_map) for i, s in enumerate(stocks[:200])] + [(s, d_str, 999, score, inst_history_map) for s in stocks[-50:]]
             
-            s_list, a_list, b_list, washout_list, rescue_list, monster_list = [], [], [], [], [], []
-            fake_bd_list, dry_up_list, rod_list = [], [], []
+            rescue_list, uptrend_list, danger_list, washout_list = [], [], [], []
+            total_scanned = len(scan_args)
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
                 results = list(executor.map(analyze_stock, scan_args))
                 
             for res in results:
                 if not res: continue
-                s, price, tag, sector = res['stock'], res['current']['Close'], res['tag'], res['sector']
-                line = f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} ({tag})"
+                s, price, sector = res['stock'], res['current']['Close'], res['sector']
                 
-                if res['monster']: monster_list.append(f"🚀[妖股] {line}")
-                if res['tier'] == "🔥[S級獵物]": s_list.append(line)
-                elif res['tier'] == "🔴[A級獵物]": a_list.append(line)
-                elif res['tier'] == "🟢[B級獵物]": b_list.append(line)
-                elif res['washout']: washout_list.append(line)
-                
-                if res['rescue']: rescue_list.append(line)
-                if res['fake_bd']: fake_bd_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}")
-                if res['dry_up']: dry_up_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}")
-                if res['rod']: rod_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f} (爆量被出貨)")
+                if res['is_rescue']:
+                    rescue_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}\n   └ {res['rescue_info']}")
+                if res['is_uptrend']:
+                    uptrend_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}\n   └ {res['uptrend_info']}")
+                if res['is_danger']:
+                    danger_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}\n   └ {res['danger_info']}")
+                if res['washout']:
+                    washout_list.append(f"• {sector} {s['id']} {s['name']}: 價 {price:.1f}")
 
-            it_dump_list = sorted([s for s in stocks if s['t_net'] < -2000000], key=lambda x: x['t_net'])[:5]
-            
-            # 🔥 補回大戶動向 Top 5 
-            top5_msg = ""
-            for s in stocks[:5]:
-                net_val = s['net']
-                if net_val >= 20000: icon = "🔥[Lv.3 沸騰]"
-                elif net_val >= 10000: icon = "♨️[Lv.2 加溫]"
-                elif net_val >= 5000: icon = "🔥[Lv.1 點火]"
-                else: icon = ""
-                top5_msg += f"• {s['id']} {s['name']}: {net_val} 張 {icon}\n"
-
-            # 🔥 補回土洋合買狙擊鏡
-            co_buy_msg = ""
-            for s in stocks[:100]:
-                if s['f_net'] > 0 and s['t_net'] > 0:
-                    if s['net'] >= 1000:
-                        co_buy_msg += f"⚡ {s['id']} {s['name']}: 共買 {s['net']} 張 (外{s['f_net']}/投{s['t_net']})\n"
-            
             # ================= 戰報組合 =================
-            msg = f"🦞【戰情室 X 終極完全體｜{display_date}】\n"
+            msg = f"🦞【龍蝦雷達 X 終極完全體｜{display_date}】\n"
             msg += etf_msg + macro_msg
             
-            msg += "\n🎯【主力獵殺區｜七刀精選 S/A/B 菁英】\n========================\n"
-            if monster_list: msg += f"{chr(10).join(monster_list)}\n\n"
-            if s_list: msg += f"🔥 [S級獵物]\n{chr(10).join(s_list)}\n"
-            if a_list: msg += f"🔴 [A級獵物]\n{chr(10).join(a_list)}\n"
-            if b_list: msg += f"🟢 [B級獵物]\n{chr(10).join(b_list)}\n"
-            if not (s_list or a_list or b_list or monster_list): msg += "無符合標準獵物。\n"
-            
-            msg += f"\n🧼 洗碗秀 (大戶護盤伏擊)\n{chr(10).join(washout_list) if washout_list else '無'}\n"
-            
-            msg += "\n🚑【逆境送分題｜主力自救突圍區】\n========================\n"
+            msg += "\n📊【系統回測統計】\n========================\n"
+            msg += f"今日選股數量: {total_scanned} 檔\n"
+            msg += f"法人自救數量: {len(rescue_list)} 檔\n"
+            msg += f"主升段數量: {len(uptrend_list)} 檔\n"
+            msg += f"避雷數量: {len(danger_list)} 檔\n"
+            msg += f"[未來回測] 5日績效: -- | 10日績效: -- | 20日績效: --\n"
+
+            msg += "\n🎯【第一區：法人自救區】\n========================\n"
             msg += f"{chr(10).join(rescue_list) if rescue_list else '無符合標的'}\n"
             
-            msg += "\n🥷【闇黑兵法｜極端吃屍區】\n========================\n"
-            msg += f"🪤 破底翻 (假跌破真誘空)\n{chr(10).join(fake_bd_list) if fake_bd_list else '無'}\n"
-            msg += f"🩸 終極窒息量 (主力偷偷鎖碼)\n{chr(10).join(dry_up_list) if dry_up_list else '無'}\n"
+            msg += "\n🚀【第二區：主升段雷達】\n========================\n"
+            msg += f"{chr(10).join(uptrend_list) if uptrend_list else '無符合標的'}\n"
             
-            msg += "\n💀【高危雷區｜請勿接刀】\n========================\n"
-            msg += "🔪 投信無情結帳:\n"
-            msg += "".join([f"• {s['id']} {s['name']}: 賣 {abs(s['t_net'])} 張\n" for s in it_dump_list]) if it_dump_list else "無\n"
-            msg += f"⚡ 散戶絞肉機 (避雷針):\n{chr(10).join(rod_list) if rod_list else '無'}\n"
+            msg += "\n💀【第三區：避雷區】\n========================\n"
+            msg += f"{chr(10).join(danger_list) if danger_list else '無符合標的'}\n"
             
-            msg += f"\n🔥 買超 Top 5 (大戶動向):\n{top5_msg}"
+            msg += f"\n🧼 【附屬訊號：洗碗秀】\n{chr(10).join(washout_list) if washout_list else '無'}\n"
             
             msg += "\n⚠️ 倒貨警報 (不死鳥):\n"
             found_bird = False
@@ -309,8 +385,6 @@ if __name__ == "__main__":
                     msg += f"• {s['id']} {s['name']}: {s['net']} 張{bird_tag}\n"
                     found_bird = True
             if not found_bird: msg += "無\n"
-
-            msg += f"\n🎯【主力狙擊鏡｜土洋合買】:\n{co_buy_msg if co_buy_msg else '無'}\n"
             
             send_msg(msg)
 
