@@ -1,8 +1,7 @@
 import os
 import requests
 import time
-import random
-from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 
 # ==========================================
 # ⚙️ 設定區
@@ -11,67 +10,62 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
 
 def send_telegram(text):
-    """ 強制發送，確保你收到結果 """
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        # 分段發送避免長度溢出
-        for i in range(0, len(text), 4000):
-            requests.post(url, json={"chat_id": CHAT_ID, "text": text[i:i+4000]}, timeout=15)
-    except: pass
+    """ 強制分段發送，確保訊息不被截斷 """
+    for i in range(0, len(text), 4000):
+        try:
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
+                          json={"chat_id": CHAT_ID, "text": text[i:i+4000]}, timeout=15)
+        except: pass
 
-def fetch_goodinfo_data():
-    """ 
-    強制鎖定 Goodinfo! 網站
-    模擬真實瀏覽器行為，抓取法人買賣超排行 
-    """
-    url = "https://goodinfo.tw/tw/StockList.asp?RPT_CAT=PER_BUY_SELL&MARKET_CAT=TWSE&INDUSTRY_CAT=ALL&RPT_TYPE=PERIOD&PERIOD=D&DIS_COLUMN=INST_BUY_T"
-    
-    # 這是關鍵：必須模擬真實瀏覽器的 Headers
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://goodinfo.tw/tw/StockList.asp?RPT_CAT=PER_BUY_SELL&MARKET_CAT=TWSE",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
-    
-    try:
-        # 強制延遲 3 秒，模擬人類讀取速度，降低被擋機率
-        time.sleep(random.uniform(3, 5))
-        session = requests.Session()
-        resp = session.get(url, headers=headers, timeout=20)
-        resp.encoding = 'utf-8'
+def fetch_data_with_backtrack():
+    """ 自動回溯機制：往前回推直到找到資料 """
+    for i in range(7): # 最多回溯 7 天
+        target_date = datetime.now() - timedelta(days=i)
+        d_str = target_date.strftime('%Y%m%d')
+        url = f"https://www.twse.com.tw/r/t86?date={d_str}&selectType=ALL"
+        headers = {"User-Agent": "Mozilla/5.0"}
         
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            # 解析 Goodinfo 的表格邏輯 (此處為結構示意)
-            table = soup.select_one("#tblStockList")
-            if table:
-                return table
-        return None
-    except Exception as e:
-        print(f"解析錯誤: {e}")
-        return None
+        try:
+            # 必須稍微延遲，模擬人類請求間隔
+            time.sleep(1) 
+            resp = requests.get(url, headers=headers, timeout=10)
+            data = resp.json()
+            
+            # 若資料有效 (長度 > 100)
+            if 'data' in data and len(data['data']) > 100:
+                return data['data'], target_date.strftime('%Y-%m-%d')
+        except:
+            continue
+    return None, None
 
 def main():
-    table = fetch_goodinfo_data()
+    rows, found_date = fetch_data_with_backtrack()
     
-    if not table:
-        # 你要求的：沒資料就靜默，不發錯誤訊息
+    # 若回溯 7 天後依然沒有資料，明確回報狀態
+    if not rows:
+        send_telegram(f"⚠️ 龍蝦雷達執行完畢：往前回溯 7 天皆無交易資料 (可能為長假)。")
         return
 
-    # 簡單提取前 10 檔標的 (模擬截圖中的表格結構)
-    msg = "🦞【Goodinfo! 精算戰報】\n\n"
-    rows = table.select("tr")
-    count = 0
-    for row in rows[2:17]: # 跳過表頭
-        cols = row.select("td")
-        if len(cols) > 5:
-            name = cols[1].text.strip()
-            buy_val = cols[5].text.strip() # 假設這是買超欄位
-            msg += f"• {name}: {buy_val}\n"
-            count += 1
-            
-    if count > 0:
+    # 執行你的條件：法人合計買超 > 5000 張
+    report_list = []
+    for row in rows:
+        try:
+            sid, name = row[0].strip(), row[1].strip()
+            # 4:外資, 10:投信
+            fn = int(row[4].replace(',', ''))
+            tn = int(row[10].replace(',', ''))
+            net = fn + tn
+            if net > 5000:
+                report_list.append(f"• {sid} {name}: {net}張 (外:{fn}/投:{tn})")
+        except: continue
+        
+    if report_list:
+        msg = f"🦞【籌碼精算戰報｜{found_date}】\n\n🎯 強勢法人狙擊 (合計 > 5000張):\n"
+        msg += "\n".join(report_list[:15])
         send_telegram(msg)
+    else:
+        # 如果有日期資料但沒股票符合條件，明確回報
+        send_telegram(f"ℹ️ 籌碼戰報 (日期: {found_date}): 今日無股票符合法人買超 > 5000 張的條件。")
 
 if __name__ == "__main__":
     main()
