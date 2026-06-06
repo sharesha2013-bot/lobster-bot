@@ -117,78 +117,50 @@ def get_us_tech():
     return ""
 
 # ==========================================
-# 🎯 雙軌獵殺掃描系統 (PRO 多執行緒版)
+# 🎯 單一濾網：散戶持股流失 (3%~5%)
 # ==========================================
-def fetch_single_stock(stock):
-    stock_id = stock['id']
-    try:
-        df = yf.Ticker(f"{stock_id}.TW").history(period="30d")
-        if df.empty or len(df) < 20:
-            df = yf.Ticker(f"{stock_id}.TWO").history(period="30d")
-        if df.empty or len(df) < 20: 
-            return None
-            
-        df = df[df['Volume'] > 0].dropna(subset=['Close', 'Volume'])
-        if len(df) < 20:
-            return None
-            
-        return {'stock': stock, 'df': df}
-    except:
-        return None
-
-def scan_pro_targets(candidate_stocks):
-    washout_mode_list = []  
-    breakout_mode_list = [] 
+def scan_retail_decrease(candidate_stocks):
+    """
+    過濾條件：散戶持股佔比流失 3% ~ 5%
+    使用日籌碼替代方案：三大法人單日淨買超佔當日總成交量的 3%~5%
+    """
+    results_list = []
     
-    scan_pool = candidate_stocks[:40] 
+    # 取前 50 檔法人買超名單進行快速換算，避免 API 請求過多超時
+    scan_pool = candidate_stocks[:50]
     
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(fetch_single_stock, scan_pool))
-    
-    for res in results:
-        if not res: continue
+    for stock in scan_pool:
+        stock_id = stock['id']
+        name = stock['name']
+        net_inst_buy = stock['net'] # 法人總淨買超 (股)
         
-        stock_id = res['stock']['id']
-        name = res['stock']['name']
-        df = res['df']
-        
-        current_price = df['Close'].iloc[-1]
-        yesterday_price = df['Close'].iloc[-2]
-        current_vol = df['Volume'].iloc[-1]
-        
-        ma10 = df['Close'].tail(10).mean()
-        ma20 = df['Close'].tail(20).mean()
-        
-        if not (current_price > ma20 and ma10 >= ma20):
-            continue 
-        
-        recent_10d = df.tail(10)
-        vol_sum = recent_10d['Volume'].sum()
-        if vol_sum == 0: continue 
-        
-        vwap_10d = (recent_10d['Close'] * recent_10d['Volume']).sum() / vol_sum
-        avg_vol_5d = df['Volume'].tail(5).mean()
-        high_10d = recent_10d['High'].max() 
-        
-        price_diff_pct = (current_price - vwap_10d) / vwap_10d
-
-        if current_price >= (vwap_10d * 0.98) and current_vol < (avg_vol_5d * 0.75) and abs(price_diff_pct) <= 0.03:
-            status = f"守底 {vwap_10d:.1f} | 量縮洗盤"
-            washout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
-
-        elif current_price >= vwap_10d and current_vol > (avg_vol_5d * 1.5) and current_price > yesterday_price:
-            if current_price >= (high_10d * 0.98): 
-                status = f"爆量點火! (前高 {high_10d:.1f})"
-                breakout_mode_list.append(f"• {stock_id} {name}: 價 {current_price:.1f} ({status})")
+        if net_inst_buy <= 0:
+            continue
             
-    report = "\n🎯【龍蝦戰情室 Pro - 雙軌獵殺名單】\n"
+        try:
+            df = yf.Ticker(f"{stock_id}.TW").history(period="1d")
+            if df.empty:
+                df = yf.Ticker(f"{stock_id}.TWO").history(period="1d")
+            if df.empty:
+                continue
+                
+            daily_volume_shares = df['Volume'].iloc[-1]
+            if daily_volume_shares == 0:
+                continue
+            
+            # 計算散戶流失比例 (法人買走的比例)
+            retail_dump_ratio = (net_inst_buy / daily_volume_shares) * 100
+            
+            # 嚴格篩選：3% 到 5% 之間
+            if 3.0 <= retail_dump_ratio <= 5.0:
+                results_list.append(f"• {stock_id} {name}: 散戶單日流失 {retail_dump_ratio:.2f}% (法人承接 {int(net_inst_buy/1000)}張)")
+                
+        except Exception:
+            continue
+            
+    report = "\n🎯【龍蝦戰情室 Pro - 散戶下車 (3%~5%) 狙擊名單】\n"
     report += "="*35 + "\n"
-    report += "🟢 階段一：洗碗秀 (量縮守底，適合潛伏)\n"
-    report += "\n".join(washout_mode_list) if washout_mode_list else "今日無符合洗碗狀態標的"
-    report += "\n\n"
-    report += "🔴 階段二：主升段 (爆量點火，準備吃鍋蓋)\n"
-    report += "\n".join(breakout_mode_list) if breakout_mode_list else "今日無符合主升段爆發標的"
+    report += "\n".join(results_list) if results_list else "今日無符合散戶流失 3%~5% 之標的"
     report += "\n" + "="*35 + "\n"
     
     return report
@@ -221,13 +193,11 @@ if __name__ == "__main__":
                 
                 res = requests.get(url, headers=HEADERS, timeout=10)
                 
-                # 🛡️ 檢查是否被擋
                 if res.status_code != 200:
                     print(f"⚠️ 證交所阻擋請求 (狀態碼: {res.status_code})，尋找前一天...")
                     target_date -= timedelta(days=1)
                     continue
                 
-                # 🛡️ 嘗試解析 JSON，抓取例外錯誤
                 res_json = res.json()
                 
             except requests.exceptions.RequestException as e:
@@ -239,7 +209,6 @@ if __name__ == "__main__":
                 target_date -= timedelta(days=1)
                 continue
             
-            # 資料正常，開始處理
             if res_json.get('stat') == 'OK':
                 data = res_json['data']
                 stocks = []
@@ -261,9 +230,10 @@ if __name__ == "__main__":
                 
                 stocks.sort(key=lambda x: x['net'], reverse=True)
                 
-                pro_msg = scan_pro_targets(stocks)
+                # 🎯 替換為全新的散戶流失濾網
+                pro_msg = scan_retail_decrease(stocks)
                 
-                msg = f"🦞【戰情室 Pro 雙軌版｜{target_date.strftime('%Y-%m-%d')}】\n"
+                msg = f"🦞【戰情室 Pro 散戶狙擊版｜{target_date.strftime('%Y-%m-%d')}】\n"
                 msg += macro_msg
                 msg += us_tech_msg
                 msg += pro_msg 
