@@ -7,12 +7,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ==========================================
-# ⚙️ 系統核心設定 (血犬 PRO - 時區校準版)
+# ⚙️ 系統設定：法人籌碼集中度雷達
 # ==========================================
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
 
-class Bloodhound:
+class ChipRanking:
     def __init__(self):
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -28,7 +28,7 @@ class Bloodhound:
 
     def send_telegram(self, text):
         if not BOT_TOKEN:
-            print("⚠️ 未設定 BOT_TOKEN，以下為系統輸出：\n" + text)
+            print("⚠️ 未設定 BOT_TOKEN，以下為終端機輸出：\n\n" + text)
             return
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -40,137 +40,122 @@ class Bloodhound:
                 print(f"推播失敗: {e}")
 
     def get_latest_trading_day(self):
-        """尋找最近一個有開盤的屠殺日 (強制綁定台灣時間)"""
-        # 🟢 核心修復：強制使用台灣時區 (UTC+8)，拒絕美國時間干擾！
+        """強制鎖定台灣時區，往前回溯尋找最新交易日"""
         tw_tz = timezone(timedelta(hours=8))
         current = datetime.now(tw_tz)
-        
-        print(f"🐺 系統啟動，目前台灣時間: {current.strftime('%Y-%m-%d %H:%M:%S')}")
-        print("🐺 開始往回嗅探最新交易日...")
+        print(f"📡 啟動雷達，目前台灣時間: {current.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        for i in range(7):
+        for _ in range(7):
             d_str = current.strftime('%Y%m%d')
-            print(f"   ➤ 正在檢查日期: {d_str}...")
-            
-            # 直接用三大法人數據測試今天有沒有開盤
             url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
             try:
                 res = self.session.get(url, timeout=10).json()
                 if res.get('stat') == 'OK' and len(res.get('data', [])) > 0:
-                    print(f"🎯 咬住最新交易日: {d_str}！")
+                    print(f"🎯 成功鎖定最新交易日: {d_str}")
                     return d_str
-            except Exception as e:
-                print(f"   [!] {d_str} 連線或解析失敗，繼續尋找...")
-                
+            except: pass
             current -= timedelta(days=1)
-            time.sleep(1.5) # 保護機制，避免被證交所封鎖
-            
+            time.sleep(1.5)
         return None
 
-    def fetch_blood_data(self, date_str):
-        """掃描戰場：行情、法人、融資"""
+    def fetch_data(self, date_str):
+        """抓取收盤量價與三大法人籌碼"""
         market = {}
         
-        # 1. 抓收盤量價
-        print(f"🐺 嗅探 {date_str} 收盤戰場...")
+        # 1. 抓取收盤價與成交量
+        print("📡 正在下載全市場成交量...")
         try:
-            url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_str}&type=ALLBUT0999"
-            res = self.session.get(url, timeout=10).json()
+            url_price = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_str}&type=ALLBUT0999"
+            res = self.session.get(url_price, timeout=10).json()
             if res.get('stat') == 'OK':
                 for t in res.get('data9', []):
                     sid, name = t[0].strip(), t[1].strip()
                     try:
-                        market[sid] = {'name': name, 'vol': int(t[2].replace(',',''))//1000, 'f':0, 'it':0, 'margin':0}
+                        # 排除權證與 ETF，只抓普通股 (長度為4)
+                        if len(sid) == 4:
+                            market[sid] = {
+                                'name': name, 
+                                'vol': int(t[2].replace(',','')) // 1000, # 換算成張
+                                'f_buy': 0, 
+                                'it_buy': 0
+                            }
                     except: continue
-        except: pass
+        except Exception as e: print(f"收盤資料抓取失敗: {e}")
         time.sleep(2)
 
-        # 2. 抓主力動向
-        print("🐺 鎖定大戶資金流向...")
+        # 2. 抓取法人買賣超
+        print("📡 正在下載法人籌碼...")
         try:
-            url = f"https://www.twse.com.tw/fund/T86?response=json&date={date_str}&selectType=ALL"
-            res = self.session.get(url, timeout=10).json()
+            url_inst = f"https://www.twse.com.tw/fund/T86?response=json&date={date_str}&selectType=ALL"
+            res = self.session.get(url_inst, timeout=10).json()
             if res.get('stat') == 'OK':
                 for row in res['data']:
                     sid = row[0].strip()
                     if sid in market:
                         try:
-                            market[sid]['f'] = int(row[4].replace(',',''))//1000
-                            market[sid]['it'] = int(row[10].replace(',',''))//1000
+                            # 抓取外資與投信買賣超 (換算成張)
+                            market[sid]['f_buy'] = int(row[4].replace(',','')) // 1000
+                            market[sid]['it_buy'] = int(row[10].replace(',','')) // 1000
                         except: continue
-        except: pass
-        time.sleep(2)
-
-        # 3. 抓散戶恐慌度 (融資)
-        print("🐺 偵測散戶恐慌指數...")
-        try:
-            url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
-            res = self.session.get(url, timeout=10).json()
-            if res.get('stat') == 'OK' and 'data' in res:
-                for row in res['data']:
-                    sid = row[0].strip()
-                    if sid in market:
-                        try:
-                            # 融資(買進-賣出-現金償還)
-                            diff = int(row[2].replace(',','')) - int(row[3].replace(',','')) - int(row[4].replace(',',''))
-                            market[sid]['margin'] = diff
-                        except: continue
-        except: pass
+        except Exception as e: print(f"法人資料抓取失敗: {e}")
         
         return market
 
-    def hunt(self):
+    def generate_ranking(self):
         try:
             date_str = self.get_latest_trading_day()
             if not date_str:
-                self.send_telegram("⚠️ 戰場迷霧過濃，無法獲取近七日任何數據。")
+                self.send_telegram("⚠️ 雷達未能取得近七日交易資料。")
                 return
 
-            data = self.fetch_blood_data(date_str)
-            
-            nuke_list = []
-            slaughter_list = []
-            demon_list = []
+            data = self.fetch_data(date_str)
+            ranking_list = []
             
             for sid, info in data.items():
-                if len(sid) != 4: continue
-                v, f, it, m = info['vol'], info['f'], info['it'], info['margin']
-                if v <= 0: continue
-
-                # ☢️ 核彈級鎖碼：單一法人買超佔據當天總成交量 10% 以上！
-                max_inst = max(f, it)
-                if max_inst > 300 and (max_inst / v) >= 0.10:
-                    inst_name = "外資" if max_inst == f else "投信"
-                    nuke_list.append(f"☢️ {sid} {info['name']} | {inst_name}霸道狂掃 {max_inst}張 (佔總量 {round((max_inst/v)*100, 1)}%)")
-
-                # 🩸 踩著屍體上漲：法人大買 > 2000，融資斷頭/大減 > 1000
-                if (f + it) > 2000 and m <= -1000:
-                    slaughter_list.append(f"🩸 {sid} {info['name']} | 主力吸血 {f+it}張 / 散戶割肉 {m}張")
-
-                # 👻 妖股甦醒：總量極低 (<3000)，但法人突然異常買超 > 300
-                if v > 500 and v <= 3000 and (f > 300 or it > 300):
-                    demon_list.append(f"👻 {sid} {info['name']} | 總量僅 {v}張 / 異動買盤 {max(f, it)}張")
-
-            # --- 激進戰報輸出 ---
-            msg = f"🐺【血犬系統 PRO｜終極籌碼暴力】\n📅 獵殺日: {date_str}\n\n"
+                vol = info['vol']
+                f_buy = info['f_buy']
+                it_buy = info['it_buy']
+                total_inst_buy = f_buy + it_buy
+                
+                # 濾網 1：單日總成交量必須大於 1000 張 (排除沒流動性的死魚)
+                # 濾網 2：法人總買超必須是大於 0 (排除法人正在倒貨的)
+                if vol >= 1000 and total_inst_buy > 0:
+                    concentration = (total_inst_buy / vol) * 100
+                    ranking_list.append({
+                        'sid': sid,
+                        'name': info['name'],
+                        'ratio': concentration,
+                        'total_buy': total_inst_buy,
+                        'vol': vol,
+                        'f': f_buy,
+                        'it': it_buy
+                    })
+                    
+            # 依照「集中度 (ratio)」由大到小排序
+            ranking_list.sort(key=lambda x: x['ratio'], reverse=True)
             
-            msg += "☢️【核彈鎖碼區】(買盤佔總量>10%)\n" + "━"*20 + "\n"
-            msg += "\n".join(nuke_list) if nuke_list else "今日無核彈級異動"
-            msg += "\n\n"
+            # 取出最強的 Top 20
+            top_20 = ranking_list[:20]
             
-            msg += "🩸【血腥屠殺區】(主力狂買+散戶大退)\n" + "━"*20 + "\n"
-            msg += "\n".join(slaughter_list) if slaughter_list else "今日無明顯割肉潮"
-            msg += "\n\n"
+            # --- 組合精美戰報 ---
+            msg = f"📊【單日法人籌碼集中度 Top 20】\n"
+            msg += f"📅 結算日: {date_str}\n"
+            msg += f"📌 條件: 成交量>1000張，由(外資+投信)佔比排序\n"
+            msg += "="*30 + "\n\n"
             
-            msg += "👻【妖股甦醒區】(冷門股異常資金進駐)\n" + "━"*20 + "\n"
-            msg += "\n".join(demon_list) if demon_list else "今日無妖氣"
-            
+            for i, stock in enumerate(top_20, 1):
+                msg += f"🏆 No.{i} | {stock['sid']} {stock['name']}\n"
+                msg += f"🎯 集中度: {stock['ratio']:.1f}%\n"
+                msg += f"📦 法人狂掃: {stock['total_buy']} 張 (佔總量 {stock['vol']} 張)\n"
+                msg += f"   (外資: {stock['f']} 張 / 投信: {stock['it']} 張)\n"
+                msg += "-"*25 + "\n"
+                
             self.send_telegram(msg)
-            print("✅ 獵殺報告已發送。")
+            print("✅ 籌碼集中度排行榜已發送！")
 
         except Exception as e:
             self.send_telegram(f"⚠️ 系統崩潰:\n{str(e)}\n{traceback.format_exc()[:300]}")
 
 if __name__ == "__main__":
-    hound = Bloodhound()
-    hound.hunt()
+    radar = ChipRanking()
+    radar.generate_ranking()
