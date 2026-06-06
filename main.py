@@ -1,67 +1,39 @@
+import yfinance as yf
 import os
 import requests
-from bs4 import BeautifulSoup
+from datetime import datetime
 
-# ==========================================
-# ⚙️ 設定區
-# ==========================================
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-CHAT_ID = "8543567603"
-
+# 設定 Telegram 發送
 def send_telegram(text):
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=15)
-    except: pass
+    bot_token = os.getenv('BOT_TOKEN')
+    chat_id = "8543567603"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text})
 
-def get_goodinfo_data():
-    """ 
-    最終強化版抓取器：模擬完整瀏覽器環境
+def check_stock_data(ticker_symbol):
     """
-    url = "https://goodinfo.tw/tw/StockList.asp?RPT_CAT=PER_BUY_SELL&MARKET_CAT=TWSE&INDUSTRY_CAT=ALL&RPT_TYPE=PERIOD&PERIOD=D&DIS_COLUMN=INST_BUY_T"
+    使用 yfinance 抓取股票資料
+    這裡以台積電 (2330.TW) 為例
+    """
+    # yfinance 台股代號需要加上 .TW
+    ticker = yf.Ticker(f"{ticker_symbol}.TW")
     
-    # 增加更多偽裝特徵，繞過網站檢測
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Referer": "https://goodinfo.tw/",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Connection": "keep-alive",
-        "Cache-Control": "max-age=0"
-    }
+    # 獲取財務與籌碼相關資訊
+    info = ticker.info
     
-    try:
-        # 增加一個 session
-        session = requests.Session()
-        resp = session.get(url, headers=headers, timeout=20)
-        
-        # 狀態碼檢查
-        if resp.status_code == 200:
-            return resp.text
-        else:
-            return f"HTTP_ERROR_{resp.status_code}"
-            
-    except Exception as e:
-        return f"CONN_ERROR_{str(e)}"
+    # 你可以在這裡篩選，例如：查看外資持股比例 (institutionalHolders)
+    # yfinance 會自動處理連線，不會被封鎖
+    return info
 
 def main():
-    result = get_goodinfo_data()
-    
-    # 如果結果是錯誤代碼，我們明確發送給 Telegram
-    if result.startswith("HTTP_") or result.startswith("CONN_"):
-        send_telegram(f"❌ Goodinfo 存取失敗: {result}")
-        return
-        
-    # 如果順利拿到網頁
-    soup = BeautifulSoup(result, 'html.parser')
-    
-    # 檢查是否有內容
-    if "法人買賣超" in result:
-        send_telegram("✅ Goodinfo 存取成功！資料已在手上，隨時可進行解析。")
-    else:
-        # 如果拿到網頁但沒內容，代表觸發了驗證碼頁面
-        send_telegram("⚠️ 警告：Goodinfo 觸發了防爬蟲驗證，目前無法解析。")
+    # 測試：抓取台積電數據
+    try:
+        data = check_stock_data("2330")
+        name = data.get('longName', '未知')
+        # 測試發送
+        send_telegram(f"✅ yfinance 連線成功！\n目標: {name}\n資料抓取正常。")
+    except Exception as e:
+        send_telegram(f"❌ yfinance 錯誤: {e}")
 
 if __name__ == "__main__":
     main()
