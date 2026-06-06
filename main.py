@@ -36,6 +36,12 @@ def fetch_tdcc_data():
     try:
         # 直接用 pandas 讀取 CSV
         df = pd.read_csv(url)
+        
+        # 🛡️ 防空包彈裝甲：檢查資料是否為空或格式錯誤
+        if df.empty or len(df.columns) < 6:
+            print("⚠️ 官方傳回空資料或格式異常。")
+            return None
+            
         df.columns = ['Date', 'Stock_ID', 'Level', 'People', 'Shares', 'Percent']
         
         # 只保留普通股 (4碼數字)
@@ -52,7 +58,13 @@ def fetch_tdcc_data():
         # 計算每檔股票的散戶與大戶佔比總和
         pivot_df = df[df['Type'] != 'Other'].groupby(['Date', 'Stock_ID', 'Type'])['Percent'].sum().unstack(fill_value=0)
         
-        return pivot_df.reset_index()
+        # 🛡️ 再次確認重組後的資料是否為空
+        result_df = pivot_df.reset_index()
+        if result_df.empty:
+            return None
+            
+        return result_df
+        
     except Exception as e:
         print(f"⚠️ 下載或解析集保資料失敗: {e}")
         return None
@@ -95,20 +107,15 @@ def scan_sniper_targets(history):
     targets = []
     
     for stock_id, date_records in history.items():
-        # 依照日期排序
         sorted_dates = sorted(date_records.keys())
         
-        # 必須要有至少 4 週的資料，才能算出 3 次的「週變化」
         if len(sorted_dates) < 4:
             continue
             
-        # 取最近 4 週
         recent_4 = sorted_dates[-4:]
-        
         match = True
         total_retail_drop = 0
         
-        # 檢查最近 3 次的變化 (W1->W2, W2->W3, W3->W4)
         for i in range(3):
             prev_week = date_records[recent_4[i]]
             curr_week = date_records[recent_4[i+1]]
@@ -144,11 +151,12 @@ if __name__ == "__main__":
         # 1. 抓取最新官方資料
         current_data = fetch_tdcc_data()
         
-        if current_data is not None:
+        # 🛡️ 攔截空資料
+        if current_data is not None and not current_data.empty:
+            
             # 2. 更新本地歷史資料庫
             history, latest_date = update_history(current_data)
             
-            # 檢查資料庫目前的週數
             sample_stock = list(history.keys())[0]
             weeks_collected = len(history[sample_stock])
             
@@ -158,7 +166,6 @@ if __name__ == "__main__":
                 msg += f"⚠️ 目前資料庫僅累積 {weeks_collected} 週數據。\n"
                 msg += "需累積滿 4 週才能啟動「連續 3 週大洗盤」濾網，請於下週末再次執行累積。"
                 
-                # 建立空的狙擊名單，避免平日程式報錯
                 with open(SNIPER_FILE, 'w', encoding='utf-8') as f:
                     json.dump([], f)
                     
@@ -176,17 +183,17 @@ if __name__ == "__main__":
                         msg += f"🎯 {t['id']} (3週散戶累計流失 {t['drop']}% | 大戶連續增)\n"
                         sniper_ids.append(t['id'])
                         
-                    # 4. 存檔供平日程式讀取
                     with open(SNIPER_FILE, 'w', encoding='utf-8') as f:
                         json.dump(sniper_ids, f)
                     msg += "\n✅ 已自動寫入狙擊名單，平日系統將自動鎖定。"
                 else:
                     msg += "本週全台股無符合「連續 3 週散戶減 1~2% 且大戶增」之極端標的。"
-                    # 清空名單
                     with open(SNIPER_FILE, 'w', encoding='utf-8') as f:
                         json.dump([], f)
             
             send_msg(msg)
+        else:
+            send_msg("⚠️【雷達警報】官方集保資料目前為空或尚在更新中，請稍後或明日再試。")
             
     except Exception as e:
         error_detail = traceback.format_exc()
