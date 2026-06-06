@@ -1,78 +1,69 @@
 import os
-import requests
-import traceback
 import json
-from datetime import datetime, timedelta
+import requests
+import pandas as pd
+import io
 
-# ==========================================
-# ⚙️ 系統設定：證交所直連狙擊
-# ==========================================
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
-SNIPER_FILE = "sniper_list.json" 
+DB_FILE = "tdcc_history.json"
+SNIPER_FILE = "sniper_list.json"
 
 def send_msg(text):
-    if not BOT_TOKEN:
-        print(text)
-        return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    if BOT_TOKEN:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    print(text)
 
-# ==========================================
-# 🎯 核心濾網：法人籌碼連動
-# ==========================================
-def fetch_twse_data(date_str):
-    """直接抓取證交所每日法人買賣超"""
-    url = f"https://www.twse.com.tw/fund/T86?response=json&date={date_str}&selectType=ALL"
-    try:
-        res = requests.get(url, timeout=10)
-        data = res.json()
-        if data.get('stat') == 'OK':
-            return data['data']
-    except:
-        return None
-    return None
+def fetch_data():
+    url = "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    res = requests.get(url, headers=headers, timeout=60)
+    df = pd.read_csv(io.StringIO(res.text))
+    df.columns = ['Date', 'Stock_ID', 'Level', 'People', 'Shares', 'Percent']
+    # 只抓散戶 (Level 1-8 是 50張以下)
+    df = df[df['Level'] <= 8]
+    df['Stock_ID'] = df['Stock_ID'].astype(str)
+    return df.groupby(['Date', 'Stock_ID'])['Percent'].sum().reset_index()
 
-# ==========================================
-# 🚀 主邏輯：抓取近三日籌碼進行比對
-# ==========================================
-if __name__ == "__main__":
+def main():
     try:
-        # 抓取近三天的日期
-        days = [(datetime.now() - timedelta(days=i)).strftime('%Y%m%d') for i in range(1, 4)]
+        new_data = fetch_data()
+        latest_date = str(new_data['Date'].iloc[0])
         
-        # 建立一個暫存籌碼的字典
-        # 結構: {stock_id: [day1_net, day2_net, day3_net]}
-        stock_history = {}
+        # 讀取歷史並更新
+        history = {}
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, 'r') as f: history = json.load(f)
+            
+        for _, row in new_data.iterrows():
+            sid = row['Stock_ID']
+            if sid not in history: history[sid] = {}
+            history[sid][latest_date] = row['Percent']
+            
+        with open(DB_FILE, 'w') as f: json.dump(history, f)
         
-        for d in days:
-            print(f"📡 讀取日期: {d}")
-            rows = fetch_twse_data(d)
-            if rows:
-                for row in rows:
-                    sid = row[0].strip()
-                    # 處理法人淨買超 (外資 + 投信)
-                    try:
-                        net = int(row[4].replace(',', '')) + int(row[10].replace(',', ''))
-                        if sid not in stock_history: stock_history[sid] = []
-                        stock_history[sid].append(net)
-                    except: continue
-        
-        # 狙擊目標：連續三天法人淨買超皆為正，且有增加趨勢
+        # 篩選條件
         targets = []
-        for sid, nets in stock_history.items():
-            if len(nets) == 3:
-                # 條件：三天都買超 (正數)，且買超量皆 > 1000 張
-                if all(n > 1000 for n in nets):
-                    targets.append(sid)
+        for sid, records in history.items():
+            dates = sorted(records.keys())
+            if len(dates) < 4: continue
+            
+            # 檢查最近 3 次週變化
+            match = True
+            for i in range(-3, 0):
+                diff = records[dates[i]] - records[dates[i-1]]
+                if diff > -2.0: # 必須減少 2% 以上
+                    match = False
+                    break
+            
+            if match: targets.append(sid)
+            
+        with open(SNIPER_FILE, 'w') as f: json.dump(targets, f)
+        send_msg(f"🦞【狙擊名單更新】日期: {latest_date}\n目標: {', '.join(targets)}")
         
-        if targets:
-            msg = f"🦞【證交所籌碼狙擊】\n🎯 鎖定籌碼連動強勢股: {', '.join(targets)}"
-            with open(SNIPER_FILE, 'w', encoding='utf-8') as f:
-                json.dump(targets, f)
-            send_msg(msg)
-        else:
-            send_msg("🦞【證交所籌碼狙擊】今日無連續三日法人買超之標的。")
-
     except Exception as e:
-        send_msg(f"⚠️ 狙擊系統崩潰: {str(e)}")
+        send_msg(f"⚠️ 程式崩潰: {str(e)}")
+
+if __name__ == "__main__":
+    main()
