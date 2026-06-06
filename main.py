@@ -30,7 +30,17 @@ HEADERS = {
 def send_msg(text):
     if not BOT_TOKEN: return
     try: 
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+        # 修正：Telegram 有 4096 字元限制，超過自動分段傳送
+        chunk_size = 4000
+        for i in range(0, len(text), chunk_size):
+            chunk = text[i:i+chunk_size]
+            res = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
+                json={"chat_id": CHAT_ID, "text": chunk}, 
+                timeout=10
+            )
+            if res.status_code != 200:
+                print(f"Telegram API Error: {res.text}")
     except Exception as e: 
         print(f"ERROR: Telegram send failed - {e}")
 
@@ -204,9 +214,8 @@ def get_historical_inst_data(target_dates):
     history_map = {}
     for d_obj in target_dates:
         d_str = d_obj.strftime('%Y%m%d')
-        # 1. 抓上市歷史
         try:
-            res = requests.get(f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL", headers=HEADERS, timeout=5)
+            res = requests.get(f"https://www.twse.com.tw/r/t86?date={d_str}&selectType=ALL", headers=HEADERS, timeout=5)
             if res.status_code == 200 and 'data' in res.json():
                 for row in res.json()['data']:
                     try:
@@ -218,7 +227,6 @@ def get_historical_inst_data(target_dates):
                     except Exception: pass
         except Exception as e: print(f"ERROR: TWSE hist fetch failed {d_str} - {e}")
             
-        # 2. 抓上櫃歷史
         try:
             otc_date = f"{d_obj.year - 1911}/{d_obj.strftime('%m/%d')}"
             res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=5)
@@ -234,7 +242,7 @@ def get_historical_inst_data(target_dates):
                         except Exception: pass
         except Exception as e: print(f"ERROR: TPEX hist fetch failed {otc_date} - {e}")
             
-        time.sleep(0.5)
+        time.sleep(1) # 避免打太快被鎖
     
     for sid in history_map:
         history_map[sid] = sorted(history_map[sid], key=lambda x: x['date_str'], reverse=True)
@@ -252,75 +260,82 @@ if __name__ == "__main__":
         elif score >= 50: macro_msg = f"⚠️【環境風險：{score}分】警報亮起，縮小部位。{reason_str}\n"
         else: macro_msg = f"🟢【環境風險：{score}分】環境安全，適合游擊。{reason_str}\n"
             
-        today = datetime.now()
+        # 修正：先用大盤確保日期是有真實開盤的，避免用迴圈猜測被鎖 IP
+        twii = yf.Ticker("^TWII").history(period="15d")
+        if twii.empty:
+            send_msg("❌ 雷達警告：無法取得大盤日期基準，請檢查網路連線。")
+            exit()
+            
+        recent_trading_days = twii.index[-5:][::-1] # 從最近一天往回查 5 天
         stocks, etfs = [], []
         d_str, display_date = "", ""
+        target_dates = []
         valid_d_obj = None
-        
-        # 徹底廢除依賴 Yahoo Finance 或 OpenAPI 來決定日期
-        # 直接從今天往前推算，盲測 10 天內的證交所真實檔案
-        for i in range(10):
-            d_obj = today - timedelta(days=i)
+
+        for d_obj in recent_trading_days:
             test_d_str = d_obj.strftime('%Y%m%d')
             otc_date = f"{d_obj.year - 1911}/{d_obj.strftime('%m/%d')}"
             
             try:
-                # 測試 TWSE 該日期是否有資料
-                url = f"https://www.twse.com.tw/fund/T86?response=json&date={test_d_str}&selectType=ALL"
+                # 測試當日是否有資料
+                url = f"https://www.twse.com.tw/r/t86?date={test_d_str}&selectType=ALL"
                 res = requests.get(url, headers=HEADERS, timeout=10)
-                data = res.json()
                 
-                if res.status_code == 200 and 'data' in data and len(data['data']) > 0:
-                    d_str = test_d_str
-                    display_date = d_obj.strftime('%Y-%m-%d')
-                    valid_d_obj = d_obj
-                    
-                    # 上市解析
-                    for row in data['data']:
-                        try:
-                            sid = row[0].strip()
-                            name = row[1].strip()
-                            fn = int(str(row[4]).replace(',', ''))
-                            tn = int(str(row[10]).replace(',', ''))
-                            net = fn + tn
-                            if sid in ['0050', '0056', '00919', '00929']: 
-                                etfs.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
-                            elif not sid.startswith('00'): 
-                                stocks.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
-                        except Exception: pass
+                if res.status_code == 200 and 'data' in res.json():
+                    data = res.json()['data']
+                    if len(data) > 100: # 確實有股市資料
+                        d_str = test_d_str
+                        display_date = d_obj.strftime('%Y-%m-%d')
+                        valid_d_obj = d_obj
                         
-                    # 上櫃解析
-                    try:
-                        url_otc = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}"
-                        res_otc = requests.get(url_otc, headers=HEADERS, timeout=10)
-                        data_otc = res_otc.json()
-                        if res_otc.status_code == 200 and 'aaData' in data_otc:
-                            for row in data_otc['aaData']:
-                                if len(row) > 12:
-                                    try:
-                                        sid = row[0].strip()
-                                        name = row[1].strip()
-                                        fn = int(row[8].replace(',', ''))
-                                        tn = int(row[11].replace(',', ''))
-                                        net = fn + tn
-                                        if sid in ['0050', '0056', '00919', '00929']: 
-                                            etfs.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
-                                        elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): 
-                                            stocks.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
-                                    except Exception: pass
-                    except Exception as e: print(f"ERROR: Current day TPEX fetch failed - {e}")
-                    
-                    break # 找到最近一天的資料，跳出迴圈
+                        # 解析上市
+                        for row in data:
+                            try:
+                                sid = row[0].strip()
+                                name = row[1].strip()
+                                fn = int(str(row[4]).replace(',', ''))
+                                tn = int(str(row[10]).replace(',', ''))
+                                net = fn + tn
+                                if sid in ['0050', '0056', '00919', '00929']: 
+                                    etfs.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
+                                elif not sid.startswith('00'): 
+                                    stocks.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
+                            except Exception: pass
+                            
+                        # 解析上櫃
+                        try:
+                            url_otc = f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}"
+                            res_otc = requests.get(url_otc, headers=HEADERS, timeout=10)
+                            if res_otc.status_code == 200 and 'aaData' in res_otc.json():
+                                for row in res_otc.json()['aaData']:
+                                    if len(row) > 12:
+                                        try:
+                                            sid = row[0].strip()
+                                            name = row[1].strip()
+                                            fn = int(row[8].replace(',', ''))
+                                            tn = int(row[11].replace(',', ''))
+                                            net = fn + tn
+                                            if sid in ['0050', '0056', '00919', '00929']: 
+                                                etfs.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
+                                            elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): 
+                                                stocks.append({'id': sid, 'name': name, 'f_net': fn, 't_net': tn, 'net': net})
+                                        except Exception: pass
+                        except Exception as e: print(f"ERROR: TPEX fetch failed - {e}")
+                        
+                        break # 成功找到最近一筆資料就跳出
             except Exception as e:
                 print(f"Test date {test_d_str} failed: {e}")
-            
-            time.sleep(1) # 避免打太快被鎖
+                
+            time.sleep(1)
 
         if not stocks:
-            send_msg(f"❌ 雷達警告：往前回推 10 天皆無籌碼資料，請檢查網路或是否被證交所封鎖 IP。")
+            send_msg(f"❌ 雷達警告：往前回推 5 個交易日皆無籌碼資料，請檢查是否被證交所暫時鎖 IP。")
         else:
-            # 取得歷史資料 (盲推過去 10 天，無資料的日子在 get_historical_inst_data 會自動略過)
-            target_dates = [valid_d_obj - timedelta(days=j) for j in range(1, 10)]
+            # 取得歷史資料 (往回抓取過去的真實交易日)
+            target_idx = twii.index.get_loc(valid_d_obj)
+            start_idx = max(0, target_idx - 4)
+            target_dates = [twii.index[idx] for idx in range(start_idx, target_idx + 1)][::-1]
+            
             inst_history_map = get_historical_inst_data(target_dates)
             
             etf_msg = ""
