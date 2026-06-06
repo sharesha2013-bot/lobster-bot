@@ -178,45 +178,54 @@ if __name__ == "__main__":
         elif score >= 50: macro_msg = f"⚠️【環境風險：{score}分】警報亮起，縮小部位。{reason_str}\n"
         else: macro_msg = f"🟢【環境風險：{score}分】環境安全，適合游擊。{reason_str}\n"
             
-        twii = yf.Ticker("^TWII").history(period="10d")
         stocks, etfs = [], []
         d_str, display_date = "", ""
         
-        for offset in range(1, 6):
-            latest_date = twii.index[-offset]
-            d_str, display_date = latest_date.strftime('%Y%m%d'), latest_date.strftime('%Y-%m-%d')
-            stocks, etfs = [], []
+        # 🔥【關鍵修復】: 直接從證交所 API 讀取「絕對最新」的交易日，徹底解決六日抓錯日期的問題
+        try:
+            date_res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
+            if date_res.status_code == 200 and len(date_res.json()) > 0:
+                d_str = date_res.json()[0].get('Date', '').replace('-', '')
+                display_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
+        except: pass
+
+        if not d_str: # 如果 API 掛掉，退回安全備用方案
+            twii = yf.Ticker("^TWII").history(period="5d")
+            d_str = twii.index[-1].strftime('%Y%m%d')
+            display_date = twii.index[-1].strftime('%Y-%m-%d')
             
-            # 上市
-            try:
-                res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
-                if res.status_code == 200:
-                    for row in res.json():
-                        if row.get('Date', '').replace('-', '') != d_str: break
-                        sid = row.get('Code', '').strip()
-                        fn, tn = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', '')), int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
-                        if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                        elif not sid.startswith('00'): stocks.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-            except: pass
+        # ==========================================
+        # 上市資料抓取 (不再迴圈亂找日期，精準鎖定 d_str)
+        # ==========================================
+        try:
+            res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
+            if res.status_code == 200:
+                for row in res.json():
+                    sid = row.get('Code', '').strip()
+                    fn, tn = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', '')), int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
+                    if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                    elif not sid.startswith('00'): stocks.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+        except: pass
                 
-            # 上櫃
-            try:
-                otc_date = f"{latest_date.year - 1911}/{latest_date.strftime('%m/%d')}"
-                res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=10)
-                if res_otc.status_code == 200 and 'aaData' in res_otc.json():
-                    for row in res_otc.json()['aaData']:
-                        if len(row) > 12:
-                            try:
-                                sid = row[0].strip()
-                                fn, tn = int(row[8].replace(',', '')), int(row[11].replace(',', ''))
-                                if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                                elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): stocks.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                            except: continue
-            except: pass
-            if stocks: break
+        # ==========================================
+        # 上櫃資料抓取
+        # ==========================================
+        try:
+            otc_date = f"{int(d_str[:4]) - 1911}/{d_str[4:6]}/{d_str[6:]}"
+            res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=10)
+            if res_otc.status_code == 200 and 'aaData' in res_otc.json():
+                for row in res_otc.json()['aaData']:
+                    if len(row) > 12:
+                        try:
+                            sid = row[0].strip()
+                            fn, tn = int(row[8].replace(',', '')), int(row[11].replace(',', ''))
+                            if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                            elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): stocks.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                        except: continue
+        except: pass
 
         if not stocks:
-            send_msg(f"❌ 雷達警告：已回溯 5 個交易日無資料。")
+            send_msg(f"❌ 雷達警告：無法取得 {display_date} 交易資料。")
         else:
             # ⚔️ 第七刀：ETF 風向球分析
             etf_msg = ""
