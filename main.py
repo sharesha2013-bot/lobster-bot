@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import traceback
-import concurrent.futures
 from datetime import datetime, timedelta
 import yfinance as yf
 import pandas as pd
@@ -30,91 +29,6 @@ def send_msg(text):
         requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
     except Exception as e:
         print(f"Telegram 推播失敗: {e}")
-
-# ==========================================
-# 📊 教科書級：主力買超熱度分級模組
-# ==========================================
-def get_heat_level_tag(net_buy_shares):
-    """根據買超張數給予教科書級別的熱度標籤"""
-    lots = net_buy_shares / 1000  # 換算成張數
-    
-    if lots >= 80000:
-        return " 🌋[Lv.4 核爆]"
-    elif lots >= 30000:
-        return " 🔥[Lv.3 沸騰]"
-    elif lots >= 10000:
-        return " ♨️[Lv.2 加溫]"
-    elif lots >= 5000:
-        return " ☕[Lv.1 微溫]"
-    else:
-        return ""
-
-# ==========================================
-# 🦅 不死鳥濾網 (PRO版：精準剔除幽靈K線)
-# ==========================================
-def check_undying_bird(stock_id):
-    try:
-        df = yf.Ticker(f"{stock_id}.TW").history(period="5d")
-        if df.empty or len(df) < 2:
-            df = yf.Ticker(f"{stock_id}.TWO").history(period="5d")
-            
-        df = df[df['Volume'] > 0]
-        if len(df) < 2: 
-            return False
-            
-        today_close = df['Close'].iloc[-1]
-        yesterday_close = df['Close'].iloc[-2]
-        
-        pct_change = ((today_close - yesterday_close) / yesterday_close) * 100
-        
-        if pct_change >= -1.5:
-            return True
-            
-        return False
-    except:
-        return False
-
-# ==========================================
-# 🌍 總體經濟與大盤風向
-# ==========================================
-def get_macro_score():
-    score = 0
-    try:
-        vix = yf.Ticker("^VIX").history(period="2d")
-        if len(vix) >= 2:
-            vix_pct = ((vix['Close'].iloc[-1] - vix['Close'].iloc[-2]) / vix['Close'].iloc[-2]) * 100
-            if vix['Close'].iloc[-1] > 20 or vix_pct > 5: score += 25
-        
-        usd = yf.Ticker("DX-Y.NYB").history(period="2d")
-        if len(usd) >= 2:
-            usd_pct = ((usd['Close'].iloc[-1] - usd['Close'].iloc[-2]) / usd['Close'].iloc[-2]) * 100
-            if usd_pct > 0.3: score += 25
-        
-        gold = yf.Ticker("GC=F").history(period="2d")
-        if len(gold) >= 2:
-            gold_pct = ((gold['Close'].iloc[-1] - gold['Close'].iloc[-2]) / gold['Close'].iloc[-2]) * 100
-            if gold_pct > 1.0: score += 25
-        
-        oil = yf.Ticker("CL=F").history(period="2d")
-        if len(oil) >= 2:
-            oil_pct = ((oil['Close'].iloc[-1] - oil['Close'].iloc[-2]) / oil['Close'].iloc[-2]) * 100
-            if oil_pct > 2.0: score += 25
-    except:
-        pass 
-    return score
-
-def get_us_tech():
-    try:
-        sox = yf.Ticker("^SOX").history(period="2d")
-        tsm = yf.Ticker("TSM").history(period="2d")
-        
-        if len(sox) >= 2 and len(tsm) >= 2:
-            sox_pct = ((sox['Close'].iloc[-1] - sox['Close'].iloc[-2]) / sox['Close'].iloc[-2]) * 100
-            tsm_pct = ((tsm['Close'].iloc[-1] - tsm['Close'].iloc[-2]) / tsm['Close'].iloc[-2]) * 100
-            return f"🇺🇸【美股風向球】費城半導體: {sox_pct:+.2f}% ｜ 台積電 ADR: {tsm_pct:+.2f}%\n"
-    except:
-        return "🇺🇸【美股風向球】夜盤數據讀取中斷\n"
-    return ""
 
 # ==========================================
 # 🎯 單一濾網：散戶持股流失 (3%~5%)
@@ -170,16 +84,6 @@ def scan_retail_decrease(candidate_stocks):
 # ==========================================
 if __name__ == "__main__":
     try:
-        score = get_macro_score()
-        if score >= 75:
-            macro_msg = f"🚨【全球防禦警報：{score} 分】市場風暴來襲，請啟動絕對防禦！\n"
-        elif score >= 50:
-            macro_msg = f"⚠️【全球風險評估：{score} 分】市場出現烏雲，建議觀望保守。\n"
-        else:
-            macro_msg = f"🟢【全球風險評估：{score} 分】全球市場安全，焦點看個股籌碼。\n"
-
-        us_tech_msg = get_us_tech()
-
         target_date = datetime.now()
         data_found = False
         
@@ -188,9 +92,8 @@ if __name__ == "__main__":
             url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
             
             try:
-                # 🛡️ 隱身裝甲：暫停 2 秒，避免被證交所機關槍掃射
+                # 🛡️ 隱身裝甲：暫停 2 秒，避免被證交所阻擋
                 time.sleep(2) 
-                
                 res = requests.get(url, headers=HEADERS, timeout=10)
                 
                 if res.status_code != 200:
@@ -224,41 +127,19 @@ if __name__ == "__main__":
                             t_net = int(row[10].replace(',', '')) if row[10] != '--' else 0
                             net = f_net + t_net
                             stocks.append({
-                                'id': stock_id, 'name': name, 'f_net': f_net, 't_net': t_net, 'net': net
+                                'id': stock_id, 'name': name, 'net': net
                             })
                         except: continue
                 
+                # 依照淨買超張數排序
                 stocks.sort(key=lambda x: x['net'], reverse=True)
                 
-                # 🎯 替換為全新的散戶流失濾網
+                # 執行乾淨的散戶流失濾網
                 pro_msg = scan_retail_decrease(stocks)
                 
-                msg = f"🦞【戰情室 Pro 散戶狙擊版｜{target_date.strftime('%Y-%m-%d')}】\n"
-                msg += macro_msg
-                msg += us_tech_msg
+                msg = f"🦞【戰情室 Pro 極簡狙擊版｜{target_date.strftime('%Y-%m-%d')}】\n"
                 msg += pro_msg 
                 
-                msg += "\n🔥 買超 Top 10:\n"
-                for s in stocks[:10]:
-                    heat_tag = get_heat_level_tag(s['net'])
-                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{heat_tag}\n"
-                    
-                msg += "\n⚠️ 倒貨 Top 10:\n"
-                for s in stocks[-10:][::-1]:
-                    bird_tag = " 🦅[不死鳥]" if check_undying_bird(s['id']) else ""
-                    msg += f"• {s['id']} {s['name']}: {int(s['net']/1000)} 張{bird_tag}\n"
-                    
-                msg += "\n🎯【主力狙擊鏡｜土洋合買】:\n"
-                count = 0
-                for s in stocks:
-                    if s['f_net'] > 0 and s['t_net'] > 0 and s['net'] > 1000000: 
-                        msg += f"⚡ {s['id']} {s['name']}: 共買 {int(s['net']/1000)} 張 (外{int(s['f_net']/1000)}/投{int(s['t_net']/1000)})\n"
-                        count += 1
-                    if count >= 5: break
-                    
-                if count == 0:
-                    msg += "今日無外資投信同步鎖碼個股。\n"
-                    
                 send_msg(msg)
                 data_found = True
                 break
