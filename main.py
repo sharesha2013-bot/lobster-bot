@@ -2,20 +2,23 @@ import os
 import requests
 
 def main():
-    # 這裡放你要查詢的 URL
-    url = "https://goodinfo.tw/tw/StockList.asp?RPT_CAT=PER_BUY_SELL&MARKET_CAT=TWSE"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    # 這是最後的確認：直接對 Telegram API 發送一則強制訊息
+    bot_token = os.getenv('BOT_TOKEN')
+    chat_id = "8543567603"
     
-    try:
-        # 只試著抓一次，沒資料就斷開，絕不循環，絕不嘗試回溯
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            print("成功抓取網頁資料")
-            # 這裡我們才開始加過濾條件
-        else:
-            print("無法連線，直接退出")
-    except:
-        print("連線錯誤，直接退出")
+    if not bot_token:
+        print("錯誤：找不到 BOT_TOKEN 環境變數")
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": "✅ 龍蝦雷達：系統運作中，通訊連線正常。"
+    }
+    
+    response = requests.post(url, json=payload)
+    print(f"發送狀態碼: {response.status_code}")
+    print(f"回傳內容: {response.text}")
 
 if __name__ == "__main__":
     main()
