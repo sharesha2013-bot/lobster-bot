@@ -2,12 +2,12 @@ import os
 import time
 import requests
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ==========================================
-# ⚙️ 系統核心設定 (血犬 PRO)
+# ⚙️ 系統核心設定 (血犬 PRO - 時區校準版)
 # ==========================================
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
@@ -28,7 +28,7 @@ class Bloodhound:
 
     def send_telegram(self, text):
         if not BOT_TOKEN:
-            print(text)
+            print("⚠️ 未設定 BOT_TOKEN，以下為系統輸出：\n" + text)
             return
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -40,18 +40,31 @@ class Bloodhound:
                 print(f"推播失敗: {e}")
 
     def get_latest_trading_day(self):
-        """尋找最近一個有開盤的屠殺日"""
-        current = datetime.now()
-        for _ in range(7):
+        """尋找最近一個有開盤的屠殺日 (強制綁定台灣時間)"""
+        # 🟢 核心修復：強制使用台灣時區 (UTC+8)，拒絕美國時間干擾！
+        tw_tz = timezone(timedelta(hours=8))
+        current = datetime.now(tw_tz)
+        
+        print(f"🐺 系統啟動，目前台灣時間: {current.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("🐺 開始往回嗅探最新交易日...")
+
+        for i in range(7):
             d_str = current.strftime('%Y%m%d')
-            url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={d_str}&type=IND"
+            print(f"   ➤ 正在檢查日期: {d_str}...")
+            
+            # 直接用三大法人數據測試今天有沒有開盤
+            url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
             try:
                 res = self.session.get(url, timeout=10).json()
-                if res.get('stat') == 'OK':
+                if res.get('stat') == 'OK' and len(res.get('data', [])) > 0:
+                    print(f"🎯 咬住最新交易日: {d_str}！")
                     return d_str
-            except: pass
+            except Exception as e:
+                print(f"   [!] {d_str} 連線或解析失敗，繼續尋找...")
+                
             current -= timedelta(days=1)
-            time.sleep(1)
+            time.sleep(1.5) # 保護機制，避免被證交所封鎖
+            
         return None
 
     def fetch_blood_data(self, date_str):
@@ -59,7 +72,7 @@ class Bloodhound:
         market = {}
         
         # 1. 抓收盤量價
-        print(f"🐺 嗅探 {date_str} 戰場數據...")
+        print(f"🐺 嗅探 {date_str} 收盤戰場...")
         try:
             url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_str}&type=ALLBUT0999"
             res = self.session.get(url, timeout=10).json()
@@ -98,6 +111,7 @@ class Bloodhound:
                     sid = row[0].strip()
                     if sid in market:
                         try:
+                            # 融資(買進-賣出-現金償還)
                             diff = int(row[2].replace(',','')) - int(row[3].replace(',','')) - int(row[4].replace(',',''))
                             market[sid]['margin'] = diff
                         except: continue
@@ -109,7 +123,7 @@ class Bloodhound:
         try:
             date_str = self.get_latest_trading_day()
             if not date_str:
-                self.send_telegram("⚠️ 戰場迷霧過濃，無法獲取數據。")
+                self.send_telegram("⚠️ 戰場迷霧過濃，無法獲取近七日任何數據。")
                 return
 
             data = self.fetch_blood_data(date_str)
