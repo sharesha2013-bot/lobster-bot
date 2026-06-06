@@ -163,7 +163,7 @@ def analyze_stock(args):
         
         if is_buying_streak and is_pullback and is_structure_safe:
             res['is_rescue'] = True
-            res['rescue_info'] = f"套牢約 {cost_gap*100:.1f}% | 連買 {consec_days} 天 | 累積 {cum_buy} 張 | 成本約 {avg_cost:.1f} 元"
+            res['rescue_info'] = f"套牢約 {cost_gap*100:.1f}% | 佔股本 {capital_ratio*100:.2f}% | 連買 {consec_days} 天 | 成本約 {avg_cost:.1f} 元"
 
         # 🚀 第二區：主升段雷達
         is_dual_buy = stock['f_net'] > 0 and stock['t_net'] > 0
@@ -177,7 +177,7 @@ def analyze_stock(args):
         if is_dual_buy and is_trend_up and (is_vol_up or is_breakout or capital_ratio >= 0.005 or is_monster):
             res['is_uptrend'] = True
             monster_tag = "🚀[妖股] " if is_monster else ""
-            res['uptrend_info'] = f"{monster_tag}量增 {vol_ratio_yest:.1f}倍 | 鎖碼 {capital_ratio*100:.2f}% | 法人買 {stock['net']} 張"
+            res['uptrend_info'] = f"{monster_tag}量增 {vol_ratio_yest:.1f}倍 | 佔股本 {capital_ratio*100:.2f}% | 法人買 {stock['net']} 張"
 
         # 💀 第三區：避雷區
         is_trust_dump = stock['t_net'] < -1000
@@ -254,68 +254,63 @@ if __name__ == "__main__":
         elif score >= 50: macro_msg = f"⚠️【環境風險：{score}分】警報亮起，縮小部位。{reason_str}\n"
         else: macro_msg = f"🟢【環境風險：{score}分】環境安全，適合游擊。{reason_str}\n"
             
-        twii = yf.Ticker("^TWII").history(period="15d")
         stocks, etfs = [], []
         d_str, display_date = "", ""
         target_dates = []
         
-        # 修正：解決 Yahoo Finance 與證交所 API 日期不同步問題 (不再嚴格比對 twii 日期)
-        for offset in range(1, 6):
-            if len(twii.index) < offset: break
-            latest_date_obj = twii.index[-offset]
-            d_str = latest_date_obj.strftime('%Y%m%d')
-            display_date = latest_date_obj.strftime('%Y-%m-%d')
-            
-            # 上市
+        # 1. 取得 TWSE 真實最新交易日資料，不再盲目猜測日期
+        try:
+            res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if data:
+                    display_date = data[0].get('Date', '')
+                    d_str = display_date.replace('-', '')
+                    
+                    for row in data:
+                        sid = row.get('Code', '').strip()
+                        fn = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', ''))
+                        tn = int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
+                        if sid in ['0050', '0056', '00919', '00929']: 
+                            etfs.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                        elif not sid.startswith('00'): 
+                            stocks.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+        except Exception as e: 
+            print(f"ERROR: Current day TWSE fetch failed - {e}")
+
+        # 2. 根據 TWSE 取得的確實日期抓取 TPEX
+        if d_str:
             try:
-                res = requests.get("https://openapi.twse.com.tw/v1/fund/T86_ALL", headers=HEADERS, timeout=10)
-                if res.status_code == 200:
-                    data = res.json()
-                    if data:
-                        # 以證交所真實最新資料日期為主，覆蓋 twii 的推算日期
-                        api_date = data[0].get('Date', '').replace('-', '')
-                        if api_date:
-                            d_str = api_date
-                            display_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
-                            
-                        for row in data:
-                            sid = row.get('Code', '').strip()
-                            fn, tn = int(str(row.get('ForeignInvestorNetBuy', '0')).replace(',', '')), int(str(row.get('InvestmentTrustNetBuy', '0')).replace(',', ''))
-                            if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                            elif not sid.startswith('00'): stocks.append({'id': sid, 'name': row.get('Name', '').strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                otc_date = f"{int(d_str[:4]) - 1911}/{d_str[4:6]}/{d_str[6:8]}"
+                res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=10)
+                if res_otc.status_code == 200 and 'aaData' in res_otc.json():
+                    for row in res_otc.json()['aaData']:
+                        if len(row) > 12:
+                            try:
+                                sid = row[0].strip()
+                                fn = int(row[8].replace(',', ''))
+                                tn = int(row[11].replace(',', ''))
+                                if sid in ['0050', '0056', '00919', '00929']: 
+                                    etfs.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                                elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): 
+                                    stocks.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
+                            except Exception as e: 
+                                print(f"ERROR: OTC row parse failed - {e}")
             except Exception as e: 
-                print(f"ERROR: Current day TWSE fetch failed - {e}")
-                
-            # 上櫃
-            if d_str:
-                try:
-                    otc_date = f"{int(d_str[:4]) - 1911}/{d_str[4:6]}/{d_str[6:8]}"
-                    res_otc = requests.get(f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={otc_date}", headers=HEADERS, timeout=10)
-                    if res_otc.status_code == 200 and 'aaData' in res_otc.json():
-                        for row in res_otc.json()['aaData']:
-                            if len(row) > 12:
-                                try:
-                                    sid = row[0].strip()
-                                    fn, tn = int(row[8].replace(',', '')), int(row[11].replace(',', ''))
-                                    if sid in ['0050', '0056', '00919', '00929']: etfs.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                                    elif sid.isdigit() and len(sid) == 4 and not sid.startswith('00'): stocks.append({'id': sid, 'name': row[1].strip(), 'f_net': fn, 't_net': tn, 'net': fn + tn})
-                                except Exception as e: 
-                                    print(f"ERROR: OTC row parse failed - {e}")
-                except Exception as e: 
-                    print(f"ERROR: Current day TPEX fetch failed - {e}")
-            
-            if stocks: 
-                # 建立歷史交易日清單，同步 twii 以對齊 d_str
-                if d_str in twii.index.strftime('%Y%m%d').values:
-                    target_idx = twii.index.get_loc(twii[twii.index.strftime('%Y%m%d') == d_str].index[0])
-                    start_idx = max(0, target_idx - 4)
-                    target_dates = [twii.index[i] for i in range(start_idx, target_idx + 1)][::-1]
-                else:
-                    target_dates = [twii.index[-i] for i in range(1, min(6, len(twii.index) + 1))]
-                break 
+                print(f"ERROR: Current day TPEX fetch failed - {e}")
+
+            # 3. 對齊 yfinance 歷史資料日期
+            twii = yf.Ticker("^TWII").history(period="15d")
+            twii_dates = twii.index.strftime('%Y%m%d').tolist()
+            if d_str in twii_dates:
+                target_idx = twii_dates.index(d_str)
+                start_idx = max(0, target_idx - 4)
+                target_dates = [twii.index[i] for i in range(start_idx, target_idx + 1)][::-1]
+            else:
+                target_dates = [twii.index[-i] for i in range(1, min(6, len(twii.index) + 1))]
 
         if not stocks:
-            send_msg(f"❌ 雷達警告：已回溯無資料。")
+            send_msg(f"❌ 雷達警告：連線證交所取得最新交易日失敗。")
         else:
             inst_history_map = get_historical_inst_data(target_dates)
             
