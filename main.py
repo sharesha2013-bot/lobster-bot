@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import requests
 import traceback
@@ -10,14 +11,19 @@ from datetime import datetime
 # ==========================================
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
-DB_FILE = "tdcc_history.json"      # 用來記憶每週集保數據的資料庫
-SNIPER_FILE = "sniper_list.json"   # 產出的狙擊名單，供平日程式讀取
+DB_FILE = "tdcc_history.json"      
+SNIPER_FILE = "sniper_list.json"   
+
+# 🛡️ 啟動 PRO 級偽裝裝甲
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/csv,application/csv,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+}
 
 def send_msg(text):
-    """傳送 Telegram 訊息"""
     if not BOT_TOKEN:
-        print("⚠️ 尚未設定 BOT_TOKEN 環境變數。以下為系統輸出：\n")
-        print(text)
+        print("⚠️ 尚未設定 BOT_TOKEN。\n" + text)
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -26,39 +32,43 @@ def send_msg(text):
         print(f"Telegram 推播失敗: {e}")
 
 # ==========================================
-# 📊 核心模組：獲取並解析官方集保資料
+# 📊 核心模組：偽裝並獲取官方集保資料
 # ==========================================
 def fetch_tdcc_data():
-    """從集保結算所開放資料下載最新一週的股權分散表"""
     url = "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5"
-    print("📡 啟動雷達：正在下載官方集保數據，檔案較大請稍候...")
+    print("📡 啟動隱形雷達：正在突破官方防線下載數據...")
     
     try:
-        # 直接用 pandas 讀取 CSV
-        df = pd.read_csv(url)
+        # 🛡️ 1. 用真人偽裝去發送請求
+        res = requests.get(url, headers=HEADERS, timeout=30)
         
-        # 🛡️ 防空包彈裝甲：檢查資料是否為空或格式錯誤
+        if res.status_code != 200:
+            print(f"⚠️ 連線遭拒，狀態碼: {res.status_code}")
+            return None
+            
+        # 🛡️ 2. 確認抓回來的是不是真的 CSV (防網頁阻擋)
+        if "<html>" in res.text.lower() or "error" in res.text.lower()[:50]:
+            print("⚠️ 遭遇官方網頁防火牆阻擋！")
+            return None
+            
+        # 🛡️ 3. 將文字轉換成資料表
+        df = pd.read_csv(io.StringIO(res.text))
+        
         if df.empty or len(df.columns) < 6:
-            print("⚠️ 官方傳回空資料或格式異常。")
+            print("⚠️ 檔案格式異常或為空。")
             return None
             
         df.columns = ['Date', 'Stock_ID', 'Level', 'People', 'Shares', 'Percent']
         
-        # 只保留普通股 (4碼數字)
         df['Stock_ID'] = df['Stock_ID'].astype(str)
         df = df[df['Stock_ID'].str.match(r'^\d{4}$')]
         
-        # 定義籌碼級距
-        # Level 1~8: 1股 ~ 50,000股 (散戶 50張以下)
-        # Level 13~15, 17: 400,001股以上 (大戶 400張以上)
         df['Type'] = 'Other'
         df.loc[df['Level'] <= 8, 'Type'] = 'Retail'
         df.loc[df['Level'] >= 13, 'Type'] = 'Large'
         
-        # 計算每檔股票的散戶與大戶佔比總和
         pivot_df = df[df['Type'] != 'Other'].groupby(['Date', 'Stock_ID', 'Type'])['Percent'].sum().unstack(fill_value=0)
         
-        # 🛡️ 再次確認重組後的資料是否為空
         result_df = pivot_df.reset_index()
         if result_df.empty:
             return None
@@ -66,14 +76,13 @@ def fetch_tdcc_data():
         return result_df
         
     except Exception as e:
-        print(f"⚠️ 下載或解析集保資料失敗: {e}")
+        print(f"⚠️ 數據解析失敗: {e}")
         return None
 
 # ==========================================
 # 💾 記憶模組：更新本地端集保歷史庫
 # ==========================================
 def update_history(current_data):
-    """將本週數據存入本地 JSON 檔案，以利計算連續三週變化"""
     history = {}
     if os.path.exists(DB_FILE):
         with open(DB_FILE, 'r', encoding='utf-8') as f:
@@ -94,7 +103,6 @@ def update_history(current_data):
             'large': round(large_pct, 2)
         }
     
-    # 存檔
     with open(DB_FILE, 'w', encoding='utf-8') as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
         
@@ -123,12 +131,10 @@ def scan_sniper_targets(history):
             retail_diff = curr_week['retail'] - prev_week['retail']
             large_diff = curr_week['large'] - prev_week['large']
             
-            # 條件一：散戶每週減少 1% ~ 2% (-2.0 <= diff <= -1.0)
             if not (-2.0 <= retail_diff <= -1.0):
                 match = False
                 break
                 
-            # 條件二：大戶增加 (diff > 0)
             if large_diff <= 0:
                 match = False
                 break
@@ -148,13 +154,9 @@ def scan_sniper_targets(history):
 # ==========================================
 if __name__ == "__main__":
     try:
-        # 1. 抓取最新官方資料
         current_data = fetch_tdcc_data()
         
-        # 🛡️ 攔截空資料
         if current_data is not None and not current_data.empty:
-            
-            # 2. 更新本地歷史資料庫
             history, latest_date = update_history(current_data)
             
             sample_stock = list(history.keys())[0]
@@ -162,15 +164,13 @@ if __name__ == "__main__":
             
             if weeks_collected < 4:
                 msg = f"🦞【週末集保雷達｜系統初始化中】\n"
-                msg += f"✅ 已成功抓取本週 ({latest_date}) 數據。\n"
+                msg += f"✅ 已成功突破防線抓取本週 ({latest_date}) 數據。\n"
                 msg += f"⚠️ 目前資料庫僅累積 {weeks_collected} 週數據。\n"
                 msg += "需累積滿 4 週才能啟動「連續 3 週大洗盤」濾網，請於下週末再次執行累積。"
                 
                 with open(SNIPER_FILE, 'w', encoding='utf-8') as f:
                     json.dump([], f)
-                    
             else:
-                # 3. 執行獵殺掃描
                 targets = scan_sniper_targets(history)
                 
                 msg = f"🦞【週末大雷達｜地獄洗盤狙擊名單】\n"
@@ -193,7 +193,7 @@ if __name__ == "__main__":
             
             send_msg(msg)
         else:
-            send_msg("⚠️【雷達警報】官方集保資料目前為空或尚在更新中，請稍後或明日再試。")
+            send_msg("⚠️【雷達警報】官方阻擋或格式異常，請檢查伺服器連線狀態。")
             
     except Exception as e:
         error_detail = traceback.format_exc()
