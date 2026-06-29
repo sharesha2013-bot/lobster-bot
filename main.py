@@ -6,10 +6,10 @@ import traceback
 from datetime import datetime
 
 # ==============================================================================
-# ⚙️ 系統設定：Unmerciful Lobster 00981A 專屬當沖自動化策略 (完整測試版)
+# ⚙️ 系統設定：Unmerciful Lobster 00981A 專屬當沖自動化策略 (GitHub 專用版)
 # ==============================================================================
-# 👇👇👇 就是下面這一行！把引號裡面的中文字刪掉，換成你的 Token 👇👇👇
-BOT_TOKEN = "請在這裡貼上你的Token"
+# 恢復正確寫法：讓程式自動去讀取 GitHub Secrets 裡面的密碼！
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = "8543567603"
 TARGET_STOCK = "00981A"
 TRADE_VOLUME = 1
@@ -28,8 +28,8 @@ class LobsterTrailingStrategy:
 
     def send_telegram(self, text):
         """發送 Telegram 戰報"""
-        if not BOT_TOKEN or BOT_TOKEN == "請在這裡貼上你的Token":
-            print("⚠️ 未設定 BOT_TOKEN，TG 推播略過，顯示於終端機：\n" + text)
+        if not BOT_TOKEN:
+            print("⚠️ 未抓取到 BOT_TOKEN (GitHub Secrets 可能未設定)，顯示於終端機：\n" + text)
             return
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         try:
