@@ -8,8 +8,8 @@ from datetime import datetime
 # ==============================================================================
 # ⚙️ 系統設定：Unmerciful Lobster 00981A 專屬當沖自動化策略 (完整測試版)
 # ==============================================================================
-# ⚠️ 上傳前，請務必把下面這行換成你真實的 Telegram BOT_TOKEN
-BOT_TOKEN = "你的_BOT_TOKEN_放這裡"
+# 👇👇👇 就是下面這一行！把引號裡面的中文字刪掉，換成你的 Token 👇👇👇
+BOT_TOKEN = "請在這裡貼上你的Token"
 CHAT_ID = "8543567603"
 TARGET_STOCK = "00981A"
 TRADE_VOLUME = 1
@@ -24,11 +24,11 @@ class LobsterTrailingStrategy:
         self.is_falling = False
         self.day_trade_done = False
         self.open_price = 0.0
-        self.is_mock_mode = False  # 用於區分是否為沙盒測試，避免晚上測試時觸發強制清倉
+        self.is_mock_mode = False
 
     def send_telegram(self, text):
         """發送 Telegram 戰報"""
-        if not BOT_TOKEN or BOT_TOKEN == "你的_BOT_TOKEN_放這裡":
+        if not BOT_TOKEN or BOT_TOKEN == "請在這裡貼上你的Token":
             print("⚠️ 未設定 BOT_TOKEN，TG 推播略過，顯示於終端機：\n" + text)
             return
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -46,12 +46,10 @@ class LobsterTrailingStrategy:
         """🎯 進場大腦：判斷是否跌深反彈且爆量"""
         if self.day_trade_done or self.has_position: return False
         
-        # 記錄開盤價
         if self.open_price == 0.0:
             self.open_price = current_price
             return False
 
-        # 如果跌破開盤價，記錄下墜過程的最低點
         if current_price < self.open_price:
             if not self.is_falling:
                 self.is_falling = True
@@ -60,11 +58,8 @@ class LobsterTrailingStrategy:
                 self.lowest_price_seen = current_price
             return False
 
-        # 如果正在下跌中，且現在價格大於看過的最低點 (尋找反彈)
         if self.is_falling and current_price > self.lowest_price_seen:
-            # 條件：反彈超過 2 檔
             rebound_threshold = self.lowest_price_seen + (2 * self.get_tick_size(current_price))
-            # 條件：成交量突破 300 張
             if current_price >= rebound_threshold and current_volume >= 300:
                 return True
                 
@@ -87,16 +82,13 @@ class LobsterTrailingStrategy:
         
         tick_size = self.get_tick_size(self.buy_price)
         
-        # 股價創新高，移動防守線跟著上移
         if current_price > self.highest_price:
             self.highest_price = current_price
             print(f"🔥 創新高: {self.highest_price:.2f}，防守線上移")
 
-        # 計算兩道防線 (固定 5 檔停損 vs 移動 5 檔停利)
         stop_loss_line = self.buy_price - (5 * tick_size)
         trailing_profit_line = self.highest_price - (5 * tick_size)
 
-        # 檢查 13:25 強制清倉 (若在沙盒測試模式則略過此檢查)
         now_str = datetime.now().strftime("%H:%M")
         is_forced_time = (now_str >= "13:25") if not self.is_mock_mode else False
 
@@ -118,7 +110,6 @@ class LobsterTrailingStrategy:
         self.has_position = False
         self.day_trade_done = True
         
-        # 損益計算
         net_profit = ((price - self.buy_price) * 1000) - 50
         profit_sign = "+" if net_profit >= 0 else ""
         
@@ -132,15 +123,14 @@ class LobsterTrailingStrategy:
         self.send_telegram("✅ [系統測試] Lobster 戰術核心已上線，開始執行沙盒模擬...")
         print("🚀 開始執行沙盒模擬...")
         
-        # 測試劇本：(價格, 單分鐘成交量)
         mock_data = [
-            (30.00, 100), # 記錄開盤
-            (29.95, 50),  # 開始下跌
-            (29.80, 80),  # 探底
-            (29.90, 400), # 反彈且爆量 -> 觸發買進 (30.00 - 5檔 = 29.75 停損)
-            (30.10, 150), # 獲利奔跑 -> 防守線拉到 29.85
-            (30.20, 100), # 繼續奔跑 -> 防守線拉到 29.95
-            (29.90, 50)   # 跌破 29.95 -> 觸發移動停利！
+            (30.00, 100), 
+            (29.95, 50),  
+            (29.80, 80),  
+            (29.90, 400), 
+            (30.10, 150), 
+            (30.20, 100), 
+            (29.90, 50)   
         ]
         
         for price, vol in mock_data:
@@ -153,7 +143,6 @@ class LobsterTrailingStrategy:
                 else:
                     self.monitor_and_exit(price)
                     
-        # 測試崩潰警報功能
         print("➡️ 測試強制崩潰警報 (模擬當機)...")
         1 / 0  
 
@@ -163,10 +152,8 @@ class LobsterTrailingStrategy:
 if __name__ == "__main__":
     bot = LobsterTrailingStrategy()
     try:
-        # 執行沙盒測試
         bot.start_mock_test()
     except Exception as e:
-        # 捕捉所有錯誤並發送警報
         error_details = traceback.format_exc()
         bot.send_telegram(f"💀【系統崩潰警報】\n你的機器人發生致命錯誤：\n{e}\n\n請登入主機檢查！")
         print("系統遭遇錯誤，已發送警報至 Telegram。")
