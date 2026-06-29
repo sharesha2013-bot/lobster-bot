@@ -1,161 +1,172 @@
+# -*- coding: utf-8 -*-
 import os
 import time
 import requests
 import traceback
-from datetime import datetime, timedelta, timezone
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from datetime import datetime
 
-# ==========================================
-# ⚙️ 系統設定：法人籌碼集中度雷達
-# ==========================================
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+# ==============================================================================
+# ⚙️ 系統設定：Unmerciful Lobster 00981A 專屬當沖自動化策略 (完整測試版)
+# ==============================================================================
+# ⚠️ 上傳前，請務必把下面這行換成你真實的 Telegram BOT_TOKEN
+BOT_TOKEN = "你的_BOT_TOKEN_放這裡"
 CHAT_ID = "8543567603"
+TARGET_STOCK = "00981A"
+TRADE_VOLUME = 1
 
-class ChipRanking:
+class LobsterTrailingStrategy:
     def __init__(self):
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Connection': 'keep-alive'
-        }
         self.session = requests.Session()
-        retry = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-        adapter = HTTPAdapter(max_retries=retry)
-        self.session.mount('http://', adapter)
-        self.session.mount('https://', adapter)
-        self.session.headers.update(self.headers)
+        self.has_position = False
+        self.buy_price = 0.0
+        self.highest_price = 0.0
+        self.lowest_price_seen = 0.0
+        self.is_falling = False
+        self.day_trade_done = False
+        self.open_price = 0.0
+        self.is_mock_mode = False  # 用於區分是否為沙盒測試，避免晚上測試時觸發強制清倉
 
     def send_telegram(self, text):
-        if not BOT_TOKEN:
-            print("⚠️ 未設定 BOT_TOKEN，以下為終端機輸出：\n\n" + text)
+        """發送 Telegram 戰報"""
+        if not BOT_TOKEN or BOT_TOKEN == "你的_BOT_TOKEN_放這裡":
+            print("⚠️ 未設定 BOT_TOKEN，TG 推播略過，顯示於終端機：\n" + text)
             return
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
-        for chunk in chunks:
-            try:
-                self.session.post(url, json={"chat_id": CHAT_ID, "text": chunk}, timeout=10)
-                time.sleep(1)
-            except Exception as e:
-                print(f"推播失敗: {e}")
-
-    def get_latest_trading_day(self):
-        """強制鎖定台灣時區，往前回溯尋找最新交易日"""
-        tw_tz = timezone(timedelta(hours=8))
-        current = datetime.now(tw_tz)
-        print(f"📡 啟動雷達，目前台灣時間: {current.strftime('%Y-%m-%d %H:%M:%S')}")
-
-        for _ in range(7):
-            d_str = current.strftime('%Y%m%d')
-            url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
-            try:
-                res = self.session.get(url, timeout=10).json()
-                if res.get('stat') == 'OK' and len(res.get('data', [])) > 0:
-                    print(f"🎯 成功鎖定最新交易日: {d_str}")
-                    return d_str
-            except: pass
-            current -= timedelta(days=1)
-            time.sleep(1.5)
-        return None
-
-    def fetch_data(self, date_str):
-        """抓取收盤量價與三大法人籌碼"""
-        market = {}
-        
-        # 1. 抓取收盤價與成交量
-        print("📡 正在下載全市場成交量...")
         try:
-            url_price = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_str}&type=ALLBUT0999"
-            res = self.session.get(url_price, timeout=10).json()
-            if res.get('stat') == 'OK':
-                for t in res.get('data9', []):
-                    sid, name = t[0].strip(), t[1].strip()
-                    try:
-                        # 排除權證與 ETF，只抓普通股 (長度為4)
-                        if len(sid) == 4:
-                            market[sid] = {
-                                'name': name, 
-                                'vol': int(t[2].replace(',','')) // 1000, # 換算成張
-                                'f_buy': 0, 
-                                'it_buy': 0
-                            }
-                    except: continue
-        except Exception as e: print(f"收盤資料抓取失敗: {e}")
-        time.sleep(2)
-
-        # 2. 抓取法人買賣超
-        print("📡 正在下載法人籌碼...")
-        try:
-            url_inst = f"https://www.twse.com.tw/fund/T86?response=json&date={date_str}&selectType=ALL"
-            res = self.session.get(url_inst, timeout=10).json()
-            if res.get('stat') == 'OK':
-                for row in res['data']:
-                    sid = row[0].strip()
-                    if sid in market:
-                        try:
-                            # 抓取外資與投信買賣超 (換算成張)
-                            market[sid]['f_buy'] = int(row[4].replace(',','')) // 1000
-                            market[sid]['it_buy'] = int(row[10].replace(',','')) // 1000
-                        except: continue
-        except Exception as e: print(f"法人資料抓取失敗: {e}")
-        
-        return market
-
-    def generate_ranking(self):
-        try:
-            date_str = self.get_latest_trading_day()
-            if not date_str:
-                self.send_telegram("⚠️ 雷達未能取得近七日交易資料。")
-                return
-
-            data = self.fetch_data(date_str)
-            ranking_list = []
-            
-            for sid, info in data.items():
-                vol = info['vol']
-                f_buy = info['f_buy']
-                it_buy = info['it_buy']
-                total_inst_buy = f_buy + it_buy
-                
-                # 濾網 1：單日總成交量必須大於 1000 張 (排除沒流動性的死魚)
-                # 濾網 2：法人總買超必須是大於 0 (排除法人正在倒貨的)
-                if vol >= 1000 and total_inst_buy > 0:
-                    concentration = (total_inst_buy / vol) * 100
-                    ranking_list.append({
-                        'sid': sid,
-                        'name': info['name'],
-                        'ratio': concentration,
-                        'total_buy': total_inst_buy,
-                        'vol': vol,
-                        'f': f_buy,
-                        'it': it_buy
-                    })
-                    
-            # 依照「集中度 (ratio)」由大到小排序
-            ranking_list.sort(key=lambda x: x['ratio'], reverse=True)
-            
-            # 取出最強的 Top 20
-            top_20 = ranking_list[:20]
-            
-            # --- 組合精美戰報 ---
-            msg = f"📊【單日法人籌碼集中度 Top 20】\n"
-            msg += f"📅 結算日: {date_str}\n"
-            msg += f"📌 條件: 成交量>1000張，由(外資+投信)佔比排序\n"
-            msg += "="*30 + "\n\n"
-            
-            for i, stock in enumerate(top_20, 1):
-                msg += f"🏆 No.{i} | {stock['sid']} {stock['name']}\n"
-                msg += f"🎯 集中度: {stock['ratio']:.1f}%\n"
-                msg += f"📦 法人狂掃: {stock['total_buy']} 張 (佔總量 {stock['vol']} 張)\n"
-                msg += f"   (外資: {stock['f']} 張 / 投信: {stock['it']} 張)\n"
-                msg += "-"*25 + "\n"
-                
-            self.send_telegram(msg)
-            print("✅ 籌碼集中度排行榜已發送！")
-
+            self.session.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
         except Exception as e:
-            self.send_telegram(f"⚠️ 系統崩潰:\n{str(e)}\n{traceback.format_exc()[:300]}")
+            print(f"TG 推播失敗: {e}")
 
+    def get_tick_size(self, price):
+        """台股檔位計算"""
+        if price < 50: return 0.05
+        return 0.1
+
+    def check_rebound_signal(self, current_price, current_volume):
+        """🎯 進場大腦：判斷是否跌深反彈且爆量"""
+        if self.day_trade_done or self.has_position: return False
+        
+        # 記錄開盤價
+        if self.open_price == 0.0:
+            self.open_price = current_price
+            return False
+
+        # 如果跌破開盤價，記錄下墜過程的最低點
+        if current_price < self.open_price:
+            if not self.is_falling:
+                self.is_falling = True
+                self.lowest_price_seen = current_price
+            elif current_price < self.lowest_price_seen:
+                self.lowest_price_seen = current_price
+            return False
+
+        # 如果正在下跌中，且現在價格大於看過的最低點 (尋找反彈)
+        if self.is_falling and current_price > self.lowest_price_seen:
+            # 條件：反彈超過 2 檔
+            rebound_threshold = self.lowest_price_seen + (2 * self.get_tick_size(current_price))
+            # 條件：成交量突破 300 張
+            if current_price >= rebound_threshold and current_volume >= 300:
+                return True
+                
+        return False
+
+    def execute_mock_buy(self, price):
+        """買進執行與發送第一則通知"""
+        self.buy_price = price
+        self.highest_price = price
+        self.has_position = True
+        stop_loss_price = price - (5 * self.get_tick_size(price))
+        
+        msg = f"🚨【Lobster Radar War Room】\n🎯 標的：{TARGET_STOCK}\n⚡️ 動作：模擬買進 (反彈爆量)\n💰 買入價：{price:.2f} 元\n🛡 絕對停損線：{stop_loss_price:.2f} 元"
+        self.send_telegram(msg)
+        print(f"✅ [進場] 買入價: {price:.2f}")
+
+    def monitor_and_exit(self, current_price):
+        """📈 出場大腦：監控移動防守線與強制清倉時間"""
+        if not self.has_position: return
+        
+        tick_size = self.get_tick_size(self.buy_price)
+        
+        # 股價創新高，移動防守線跟著上移
+        if current_price > self.highest_price:
+            self.highest_price = current_price
+            print(f"🔥 創新高: {self.highest_price:.2f}，防守線上移")
+
+        # 計算兩道防線 (固定 5 檔停損 vs 移動 5 檔停利)
+        stop_loss_line = self.buy_price - (5 * tick_size)
+        trailing_profit_line = self.highest_price - (5 * tick_size)
+
+        # 檢查 13:25 強制清倉 (若在沙盒測試模式則略過此檢查)
+        now_str = datetime.now().strftime("%H:%M")
+        is_forced_time = (now_str >= "13:25") if not self.is_mock_mode else False
+
+        triggered = False
+        exit_reason = ""
+
+        if current_price <= stop_loss_line:
+            triggered, exit_reason = True, "無情停損 (撞擊固定 5 檔)"
+        elif current_price <= trailing_profit_line and current_price > self.buy_price:
+            triggered, exit_reason = True, "移動停利 (最高點回撤 5 檔)"
+        elif is_forced_time:
+            triggered, exit_reason = True, "當日銷帳紀律 (13:25 強制清倉)"
+
+        if triggered:
+            self.execute_mock_sell(current_price, exit_reason)
+
+    def execute_mock_sell(self, price, reason):
+        """賣出執行與發送最終戰報"""
+        self.has_position = False
+        self.day_trade_done = True
+        
+        # 損益計算
+        net_profit = ((price - self.buy_price) * 1000) - 50
+        profit_sign = "+" if net_profit >= 0 else ""
+        
+        msg = f"📊【Unmerciful Lobster 結算戰報】\n🎯 標的：{TARGET_STOCK}\n⚡️ 動作：模擬賣出 ({reason})\n💵 賣出價：{price:.2f} 元\n📉 買入價：{self.buy_price:.2f} 元\n📈 淨損益結算：{profit_sign}{int(net_profit)} 元"
+        self.send_telegram(msg)
+        print(f"✅ [出場] 原因: {reason}, 損益: {int(net_profit)}")
+
+    def start_mock_test(self):
+        """沙盒模擬測試器：灌入假劇本測試邏輯"""
+        self.is_mock_mode = True
+        self.send_telegram("✅ [系統測試] Lobster 戰術核心已上線，開始執行沙盒模擬...")
+        print("🚀 開始執行沙盒模擬...")
+        
+        # 測試劇本：(價格, 單分鐘成交量)
+        mock_data = [
+            (30.00, 100), # 記錄開盤
+            (29.95, 50),  # 開始下跌
+            (29.80, 80),  # 探底
+            (29.90, 400), # 反彈且爆量 -> 觸發買進 (30.00 - 5檔 = 29.75 停損)
+            (30.10, 150), # 獲利奔跑 -> 防守線拉到 29.85
+            (30.20, 100), # 繼續奔跑 -> 防守線拉到 29.95
+            (29.90, 50)   # 跌破 29.95 -> 觸發移動停利！
+        ]
+        
+        for price, vol in mock_data:
+            print(f"➡️ 收到報價: {price:.2f} (量: {vol})")
+            time.sleep(2)
+            if not self.day_trade_done:
+                if not self.has_position:
+                    if self.check_rebound_signal(price, vol):
+                        self.execute_mock_buy(price)
+                else:
+                    self.monitor_and_exit(price)
+                    
+        # 測試崩潰警報功能
+        print("➡️ 測試強制崩潰警報 (模擬當機)...")
+        1 / 0  
+
+# ==============================================================================
+# 🛡️ 主程式執行與全域崩潰警報網
+# ==============================================================================
 if __name__ == "__main__":
-    radar = ChipRanking()
-    radar.generate_ranking()
+    bot = LobsterTrailingStrategy()
+    try:
+        # 執行沙盒測試
+        bot.start_mock_test()
+    except Exception as e:
+        # 捕捉所有錯誤並發送警報
+        error_details = traceback.format_exc()
+        bot.send_telegram(f"💀【系統崩潰警報】\n你的機器人發生致命錯誤：\n{e}\n\n請登入主機檢查！")
+        print("系統遭遇錯誤，已發送警報至 Telegram。")
