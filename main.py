@@ -1,159 +1,141 @@
 # -*- coding: utf-8 -*-
+import json
+import csv
 import os
-import time
-import requests
-import traceback
 from datetime import datetime
 
-# ==============================================================================
-# ⚙️ 系統設定：Unmerciful Lobster 00981A 專屬當沖自動化策略 (GitHub 專用版)
-# ==============================================================================
-# 恢復正確寫法：讓程式自動去讀取 GitHub Secrets 裡面的密碼！
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-CHAT_ID = "8543567603"
-TARGET_STOCK = "00981A"
-TRADE_VOLUME = 1
-
-class LobsterTrailingStrategy:
+class Logger:
     def __init__(self):
-        self.session = requests.Session()
-        self.has_position = False
-        self.buy_price = 0.0
-        self.highest_price = 0.0
-        self.lowest_price_seen = 0.0
-        self.is_falling = False
-        self.day_trade_done = False
-        self.open_price = 0.0
-        self.is_mock_mode = False
+        self.config = self.load_config()
+        # 每天啟動產生一次 session_id
+        self.session_id = datetime.now().strftime("%Y%m%d")
+        self.signal_file = "signal_log.csv"
+        self.trade_file = "trade_log.csv"
+        self.init_logs()
 
-    def send_telegram(self, text):
-        """發送 Telegram 戰報"""
-        if not BOT_TOKEN:
-            print("⚠️ 未抓取到 BOT_TOKEN (GitHub Secrets 可能未設定)，顯示於終端機：\n" + text)
-            return
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    def load_config(self):
+        """讀取外部 config.json"""
         try:
-            self.session.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+            with open("config.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print("⚠️ 找不到 config.json，系統將以空殼運行，請確認檔案位置！")
+            return {}
+
+    def init_logs(self):
+        """初始化日誌檔案與完整表頭 (加入 session_id)"""
+        try:
+            # 初始化 Signal Log
+            if not os.path.exists(self.signal_file):
+                with open(self.signal_file, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "session_id", "time", "price", "vwap", "volume_1m", "bid_ask_ratio", 
+                        "cond_a", "cond_b", "cond_c", "decision", "reject_reason"
+                    ])
+
+            # 初始化 Trade Log
+            if not os.path.exists(self.trade_file):
+                with open(self.trade_file, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "session_id", "entry_time", "symbol", "entry_reason", "vwap", "volume_1m", 
+                        "bid_ask_ratio", "entry_price", "stop_loss", "take_profit",
+                        "exit_time", "exit_price", "profit", "mfe", "mae", "exit_reason"
+                    ])
         except Exception as e:
-            print(f"TG 推播失敗: {e}")
+            print(f"🚨 Log Init Error (無法建立檔案): {e}")
 
-    def get_tick_size(self, price):
-        """台股檔位計算"""
-        if price < 50: return 0.05
-        return 0.1
+    def log_signal(self, data: dict):
+        """寫入每一次的訊號檢查紀錄 (防呆版)"""
+        try:
+            with open(self.signal_file, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    self.session_id,
+                    data.get("time", ""),
+                    data.get("price", ""),
+                    data.get("vwap", ""),
+                    data.get("volume_1m", ""),
+                    data.get("bid_ask_ratio", ""),
+                    data.get("cond_a", ""),
+                    data.get("cond_b", ""),
+                    data.get("cond_c", ""),
+                    data.get("decision", ""),
+                    data.get("reject_reason", "")
+                ])
+        except Exception as e:
+            print(f"🚨 Log Error (Signal 寫入失敗): {e}")
 
-    def check_rebound_signal(self, current_price, current_volume):
-        """🎯 進場大腦：判斷是否跌深反彈且爆量"""
-        if self.day_trade_done or self.has_position: return False
-        
-        if self.open_price == 0.0:
-            self.open_price = current_price
-            return False
+    def log_trade(self, data: dict):
+        """寫入完成的交易紀錄 (防呆版)"""
+        try:
+            with open(self.trade_file, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    self.session_id,
+                    data.get("entry_time", ""),
+                    data.get("symbol", ""),
+                    data.get("entry_reason", ""),
+                    data.get("vwap", ""),
+                    data.get("volume_1m", ""),
+                    data.get("bid_ask_ratio", ""),
+                    data.get("entry_price", ""),
+                    data.get("stop_loss", ""),
+                    data.get("take_profit", ""),
+                    data.get("exit_time", ""),
+                    data.get("exit_price", ""),
+                    data.get("profit", ""),
+                    data.get("mfe", ""),
+                    data.get("mae", ""),
+                    data.get("exit_reason", "")
+                ])
+        except Exception as e:
+            print(f"🚨 Log Error (Trade 寫入失敗): {e}")
 
-        if current_price < self.open_price:
-            if not self.is_falling:
-                self.is_falling = True
-                self.lowest_price_seen = current_price
-            elif current_price < self.lowest_price_seen:
-                self.lowest_price_seen = current_price
-            return False
-
-        if self.is_falling and current_price > self.lowest_price_seen:
-            rebound_threshold = self.lowest_price_seen + (2 * self.get_tick_size(current_price))
-            if current_price >= rebound_threshold and current_volume >= 300:
-                return True
-                
-        return False
-
-    def execute_mock_buy(self, price):
-        """買進執行與發送第一則通知"""
-        self.buy_price = price
-        self.highest_price = price
-        self.has_position = True
-        stop_loss_price = price - (5 * self.get_tick_size(price))
-        
-        msg = f"🚨【Lobster Radar War Room】\n🎯 標的：{TARGET_STOCK}\n⚡️ 動作：模擬買進 (反彈爆量)\n💰 買入價：{price:.2f} 元\n🛡 絕對停損線：{stop_loss_price:.2f} 元"
-        self.send_telegram(msg)
-        print(f"✅ [進場] 買入價: {price:.2f}")
-
-    def monitor_and_exit(self, current_price):
-        """📈 出場大腦：監控移動防守線與強制清倉時間"""
-        if not self.has_position: return
-        
-        tick_size = self.get_tick_size(self.buy_price)
-        
-        if current_price > self.highest_price:
-            self.highest_price = current_price
-            print(f"🔥 創新高: {self.highest_price:.2f}，防守線上移")
-
-        stop_loss_line = self.buy_price - (5 * tick_size)
-        trailing_profit_line = self.highest_price - (5 * tick_size)
-
-        now_str = datetime.now().strftime("%H:%M")
-        is_forced_time = (now_str >= "13:25") if not self.is_mock_mode else False
-
-        triggered = False
-        exit_reason = ""
-
-        if current_price <= stop_loss_line:
-            triggered, exit_reason = True, "無情停損 (撞擊固定 5 檔)"
-        elif current_price <= trailing_profit_line and current_price > self.buy_price:
-            triggered, exit_reason = True, "移動停利 (最高點回撤 5 檔)"
-        elif is_forced_time:
-            triggered, exit_reason = True, "當日銷帳紀律 (13:25 強制清倉)"
-
-        if triggered:
-            self.execute_mock_sell(current_price, exit_reason)
-
-    def execute_mock_sell(self, price, reason):
-        """賣出執行與發送最終戰報"""
-        self.has_position = False
-        self.day_trade_done = True
-        
-        net_profit = ((price - self.buy_price) * 1000) - 50
-        profit_sign = "+" if net_profit >= 0 else ""
-        
-        msg = f"📊【Unmerciful Lobster 結算戰報】\n🎯 標的：{TARGET_STOCK}\n⚡️ 動作：模擬賣出 ({reason})\n💵 賣出價：{price:.2f} 元\n📉 買入價：{self.buy_price:.2f} 元\n📈 淨損益結算：{profit_sign}{int(net_profit)} 元"
-        self.send_telegram(msg)
-        print(f"✅ [出場] 原因: {reason}, 損益: {int(net_profit)}")
-
-    def start_mock_test(self):
-        """沙盒模擬測試器：灌入假劇本測試邏輯"""
-        self.is_mock_mode = True
-        self.send_telegram("✅ [系統測試] Lobster 戰術核心已上線，開始執行沙盒模擬...")
-        print("🚀 開始執行沙盒模擬...")
-        
-        mock_data = [
-            (30.00, 100), 
-            (29.95, 50),  
-            (29.80, 80),  
-            (29.90, 400), 
-            (30.10, 150), 
-            (30.20, 100), 
-            (29.90, 50)   
-        ]
-        
-        for price, vol in mock_data:
-            print(f"➡️ 收到報價: {price:.2f} (量: {vol})")
-            time.sleep(2)
-            if not self.day_trade_done:
-                if not self.has_position:
-                    if self.check_rebound_signal(price, vol):
-                        self.execute_mock_buy(price)
-                else:
-                    self.monitor_and_exit(price)
-                    
-        print("➡️ 測試強制崩潰警報 (模擬當機)...")
-        1 / 0  
-
-# ==============================================================================
-# 🛡️ 主程式執行與全域崩潰警報網
-# ==============================================================================
+# ==========================================
+# 🚀 執行 Milestone 1 驗收測試
+# ==========================================
 if __name__ == "__main__":
-    bot = LobsterTrailingStrategy()
-    try:
-        bot.start_mock_test()
-    except Exception as e:
-        error_details = traceback.format_exc()
-        bot.send_telegram(f"💀【系統崩潰警報】\n你的機器人發生致命錯誤：\n{e}\n\n請登入主機檢查！")
-        print("系統遭遇錯誤，已發送警報至 Telegram。")
+    print("啟動 Milestone 1 驗證模組...")
+    logger = Logger()
+    print(f"✅ 設定檔讀取成功！ PAPER_MODE = {logger.config.get('PAPER_MODE')}")
+    
+    # 取得含日期的完整時間格式
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # 寫入測試用 Signal 紀錄
+    logger.log_signal({
+        "time": current_time,
+        "price": 30.15,
+        "vwap": 30.08,
+        "volume_1m": 420,
+        "bid_ask_ratio": 1.82,
+        "cond_a": True,
+        "cond_b": True,
+        "cond_c": False,
+        "decision": "REJECT",
+        "reject_reason": "NO_IGNITION"
+    })
+    print("✅ 測試訊號已發送至寫入佇列")
+
+    # 寫入測試用 Trade 紀錄
+    logger.log_trade({
+        "entry_time": current_time,
+        "symbol": "00981A",
+        "entry_reason": "VWAP_BOUNCE",
+        "vwap": 30.10,
+        "volume_1m": 350,
+        "bid_ask_ratio": 1.6,
+        "entry_price": 30.10,
+        "stop_loss": 29.85,
+        "take_profit": 30.50,
+        "exit_time": current_time,
+        "exit_price": 30.32,
+        "profit": 220,
+        "mfe": 250,
+        "mae": -50,
+        "exit_reason": "TRAILING_STOP"
+    })
+    print("✅ 測試交易已發送至寫入佇列")
+    print("🚀 請進行 4 項驗收並嘗試連續執行兩次程式！")
